@@ -273,7 +273,7 @@ apply to Your use of the Licensed Material:
 
   a. for the avoidance of doubt, Section 2(a)(1) grants You the right
      to extract, reuse, reproduce, and Share all or a substantial
-     portion of the contents of the database for NonCommercial purposes
+     portion of the contents of the database for NonCommercial purposesLICENSE
      only and provided You do not Share Adapted Material;
 
   b. if You include all or a substantial portion of the database
@@ -400,4 +400,6 @@ the avoidance of doubt, this paragraph does not form part of the
 public licenses.
 
 Creative Commons may be contacted at creativecommons.org. </strike>
+
+# FREE PEOPLE DO NOT FUCKING ASK FOR PERMISSION.
 

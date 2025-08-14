@@ -5,9 +5,10 @@
 import argparse
 import glob
 import sys
-import os
 import re
 import hashlib
+import os
+
 
 from pathlib import Path
 

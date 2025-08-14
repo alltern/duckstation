@@ -1,4 +1,6 @@
-# DuckStation - PlayStation 1, aka. PSX Emulator
+~~# DuckStation - PlayStation 1, aka. PSX Emulator~~
+
+#THIS IS MY DUCKSTATION NOW#
 
 [Features](#features) | [Downloading and Running](#downloading-and-running) | [Building](#building) | [Disclaimers](#disclaimers)
 

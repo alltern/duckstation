@@ -5,7 +5,7 @@
 #include "cpu_code_cache.h"
 #include "cpu_core.h"
 #include "cpu_pgxp.h"
-#include "fullscreen_ui.h"
+#include "fullscreenui.h"
 #include "gpu.h"
 #include "gpu_hw_texture_cache.h"
 #include "gpu_presenter.h"
@@ -63,62 +63,6 @@ static void HotkeyModifyResolutionScale(s32 increment)
   {
     GPUThread::UpdateSettings(true, false, false);
     System::ClearMemorySaveStates(true, false);
-  }
-}
-
-static void HotkeyLoadStateSlot(bool global, s32 slot)
-{
-  if (!System::IsValid())
-    return;
-
-  if (!global && System::GetGameSerial().empty())
-  {
-    Host::AddKeyedOSDMessage("LoadState", TRANSLATE_STR("OSDMessage", "Cannot load state for game without serial."),
-                             Host::OSD_ERROR_DURATION);
-    return;
-  }
-
-  std::string path(global ? System::GetGlobalSaveStatePath(slot) :
-                            System::GetGameSaveStatePath(System::GetGameSerial(), slot));
-  if (!FileSystem::FileExists(path.c_str()))
-  {
-    Host::AddKeyedOSDMessage("LoadState",
-                             fmt::format(TRANSLATE_FS("OSDMessage", "No save state found in slot {}."), slot),
-                             Host::OSD_INFO_DURATION);
-    return;
-  }
-
-  Error error;
-  if (!System::LoadState(path.c_str(), &error, true, false))
-  {
-    Host::AddKeyedOSDMessage(
-      "LoadState",
-      fmt::format(TRANSLATE_FS("OSDMessage", "Failed to load state from slot {0}:\n{1}"), slot, error.GetDescription()),
-      Host::OSD_ERROR_DURATION);
-  }
-}
-
-static void HotkeySaveStateSlot(bool global, s32 slot)
-{
-  if (!System::IsValid())
-    return;
-
-  if (!global && System::GetGameSerial().empty())
-  {
-    Host::AddKeyedOSDMessage("SaveState", TRANSLATE_STR("OSDMessage", "Cannot save state for game without serial."),
-                             Host::OSD_ERROR_DURATION);
-    return;
-  }
-
-  std::string path(global ? System::GetGlobalSaveStatePath(slot) :
-                            System::GetGameSaveStatePath(System::GetGameSerial(), slot));
-  Error error;
-  if (!System::SaveState(std::move(path), &error, g_settings.create_save_state_backups, false))
-  {
-    Host::AddIconOSDMessage(
-      "SaveState", ICON_FA_TRIANGLE_EXCLAMATION,
-      fmt::format(TRANSLATE_FS("OSDMessage", "Failed to save state to slot {0}:\n{1}"), slot, error.GetDescription()),
-      Host::OSD_ERROR_DURATION);
   }
 }
 
@@ -191,7 +135,7 @@ DEFINE_NON_ANDROID_HOTKEY("TogglePause", TRANSLATE_NOOP("Hotkeys", "Interface"),
 DEFINE_NON_ANDROID_HOTKEY("ToggleFullscreen", TRANSLATE_NOOP("Hotkeys", "Interface"),
                           TRANSLATE_NOOP("Hotkeys", "Toggle Fullscreen"), [](s32 pressed) {
                             if (!pressed)
-                              Host::SetFullscreen(!Host::IsFullscreen());
+                              GPUThread::SetFullscreen(!GPUThread::IsFullscreen());
                           })
 
 DEFINE_HOTKEY("FastForward", TRANSLATE_NOOP("Hotkeys", "System"), TRANSLATE_NOOP("Hotkeys", "Fast Forward (Hold)"),
@@ -293,18 +237,16 @@ DEFINE_HOTKEY("ToggleOverclocking", TRANSLATE_NOOP("Hotkeys", "System"),
                     const double clock_speed =
                       ((static_cast<double>(System::MASTER_CLOCK) * static_cast<double>(percent)) / 100.0) / 1000000.0;
                     Host::AddIconOSDMessage(
-                      "ToggleOverclocking", ICON_FA_GAUGE_SIMPLE_HIGH,
+                      OSDMessageType::Quick, "ToggleOverclocking", ICON_FA_GAUGE_SIMPLE_HIGH,
                       fmt::format(TRANSLATE_FS("OSDMessage", "CPU clock speed control enabled ({:.3f} MHz)."),
-                                  clock_speed),
-                      Host::OSD_QUICK_DURATION);
+                                  clock_speed));
                   }
                   else
                   {
                     Host::AddIconOSDMessage(
-                      "ToggleOverclocking", ICON_FA_GAUGE_SIMPLE_HIGH,
+                      OSDMessageType::Quick, "ToggleOverclocking", ICON_FA_GAUGE_SIMPLE_HIGH,
                       fmt::format(TRANSLATE_FS("OSDMessage", "CPU clock speed control disabled ({:.3f} MHz)."),
-                                  static_cast<double>(System::MASTER_CLOCK) / 1000000.0),
-                      Host::OSD_QUICK_DURATION);
+                                  static_cast<double>(System::MASTER_CLOCK) / 1000000.0));
                   }
                 }
               })
@@ -316,10 +258,9 @@ DEFINE_HOTKEY("IncreaseEmulationSpeed", TRANSLATE_NOOP("Hotkeys", "System"),
                   g_settings.emulation_speed += 0.1f;
                   System::UpdateSpeedLimiterState();
                   Host::AddIconOSDMessage(
-                    "EmulationSpeedChange", ICON_FA_GAUGE_SIMPLE_HIGH,
+                    OSDMessageType::Quick, "EmulationSpeedChange", ICON_FA_GAUGE_SIMPLE_HIGH,
                     fmt::format(TRANSLATE_FS("OSDMessage", "Emulation speed set to {}%."),
-                                static_cast<u32>(std::lround(g_settings.emulation_speed * 100.0f))),
-                    Host::OSD_QUICK_DURATION);
+                                static_cast<u32>(std::lround(g_settings.emulation_speed * 100.0f))));
                 }
               })
 
@@ -331,10 +272,9 @@ DEFINE_HOTKEY("DecreaseEmulationSpeed", TRANSLATE_NOOP("Hotkeys", "System"),
                     std::max(g_settings.emulation_speed - 0.1f, Achievements::IsHardcoreModeActive() ? 1.0f : 0.1f);
                   System::UpdateSpeedLimiterState();
                   Host::AddIconOSDMessage(
-                    "EmulationSpeedChange", ICON_FA_GAUGE_SIMPLE_HIGH,
+                    OSDMessageType::Quick, "EmulationSpeedChange", ICON_FA_GAUGE_SIMPLE_HIGH,
                     fmt::format(TRANSLATE_FS("OSDMessage", "Emulation speed set to {}%."),
-                                static_cast<u32>(std::lround(g_settings.emulation_speed * 100.0f))),
-                    Host::OSD_QUICK_DURATION);
+                                static_cast<u32>(std::lround(g_settings.emulation_speed * 100.0f))));
                 }
               })
 
@@ -346,10 +286,9 @@ DEFINE_HOTKEY("ResetEmulationSpeed", TRANSLATE_NOOP("Hotkeys", "System"),
                                                         Achievements::IsHardcoreModeActive() ? 1.0f : 0.1f);
                   System::UpdateSpeedLimiterState();
                   Host::AddIconOSDMessage(
-                    "EmulationSpeedChange", ICON_FA_GAUGE_SIMPLE_HIGH,
+                    OSDMessageType::Quick, "EmulationSpeedChange", ICON_FA_GAUGE_SIMPLE_HIGH,
                     fmt::format(TRANSLATE_FS("OSDMessage", "Emulation speed set to {}%."),
-                                static_cast<u32>(std::lround(g_settings.emulation_speed * 100.0f))),
-                    Host::OSD_QUICK_DURATION);
+                                static_cast<u32>(std::lround(g_settings.emulation_speed * 100.0f))));
                 }
               })
 
@@ -404,11 +343,10 @@ DEFINE_HOTKEY("TogglePGXP", TRANSLATE_NOOP("Hotkeys", "Graphics"), TRANSLATE_NOO
 
                   GPUThread::UpdateSettings(true, false, false);
 
-                  Host::AddKeyedOSDMessage("TogglePGXP",
+                  Host::AddKeyedOSDMessage(OSDMessageType::Quick, "TogglePGXP",
                                            g_settings.gpu_pgxp_enable ?
                                              TRANSLATE_STR("OSDMessage", "PGXP is now enabled.") :
-                                             TRANSLATE_STR("OSDMessage", "PGXP is now disabled."),
-                                           Host::OSD_QUICK_DURATION);
+                                             TRANSLATE_STR("OSDMessage", "PGXP is now disabled."));
 
                   if (g_settings.gpu_pgxp_enable)
                     CPU::PGXP::Initialize();
@@ -435,11 +373,10 @@ DEFINE_HOTKEY("TogglePGXPDepth", TRANSLATE_NOOP("Hotkeys", "Graphics"),
                   g_settings.gpu_pgxp_depth_buffer = !g_settings.gpu_pgxp_depth_buffer;
                   GPUThread::UpdateSettings(true, false, false);
 
-                  Host::AddIconOSDMessage("TogglePGXPDepth", ICON_FA_SITEMAP,
+                  Host::AddIconOSDMessage(OSDMessageType::Quick, "TogglePGXPDepth", ICON_FA_SITEMAP,
                                           g_settings.gpu_pgxp_depth_buffer ?
                                             TRANSLATE_STR("OSDMessage", "PGXP Depth Buffer is now enabled.") :
-                                            TRANSLATE_STR("OSDMessage", "PGXP Depth Buffer is now disabled."),
-                                          Host::OSD_QUICK_DURATION);
+                                            TRANSLATE_STR("OSDMessage", "PGXP Depth Buffer is now disabled."));
                 }
               })
 
@@ -602,13 +539,14 @@ DEFINE_HOTKEY("AudioMute", TRANSLATE_NOOP("Hotkeys", "Audio"), TRANSLATE_NOOP("H
                   SPU::GetOutputStream()->SetOutputVolume(volume);
                   if (g_settings.audio_output_muted)
                   {
-                    Host::AddIconOSDMessage("AudioControlHotkey", ICON_EMOJI_MUTED_SPEAKER,
-                                            TRANSLATE_STR("OSDMessage", "Volume: Muted"), 5.0f);
+                    Host::AddIconOSDMessage(OSDMessageType::Quick, "AudioControlHotkey", ICON_EMOJI_MUTED_SPEAKER,
+                                            TRANSLATE_STR("OSDMessage", "Volume: Muted"));
                   }
                   else
                   {
-                    Host::AddIconOSDMessage("AudioControlHotkey", ICON_EMOJI_MEDIUM_VOLUME_SPEAKER,
-                                            fmt::format(TRANSLATE_FS("OSDMessage", "Volume: {}%"), volume), 5.0f);
+                    Host::AddIconOSDMessage(OSDMessageType::Quick, "AudioControlHotkey",
+                                            ICON_EMOJI_MEDIUM_VOLUME_SPEAKER,
+                                            fmt::format(TRANSLATE_FS("OSDMessage", "Volume: {}%"), volume));
                   }
                 }
               })
@@ -618,11 +556,10 @@ DEFINE_HOTKEY("AudioCDAudioMute", TRANSLATE_NOOP("Hotkeys", "Audio"), TRANSLATE_
                 {
                   g_settings.cdrom_mute_cd_audio = !g_settings.cdrom_mute_cd_audio;
                   Host::AddIconOSDMessage(
-                    "AudioControlHotkey",
+                    OSDMessageType::Quick, "AudioControlHotkey",
                     g_settings.cdrom_mute_cd_audio ? ICON_EMOJI_MUTED_SPEAKER : ICON_EMOJI_MEDIUM_VOLUME_SPEAKER,
                     g_settings.cdrom_mute_cd_audio ? TRANSLATE_STR("OSDMessage", "CD Audio Muted.") :
-                                                     TRANSLATE_STR("OSDMessage", "CD Audio Unmuted."),
-                    2.0f);
+                                                     TRANSLATE_STR("OSDMessage", "CD Audio Unmuted."));
                 }
               })
 DEFINE_HOTKEY("AudioVolumeUp", TRANSLATE_NOOP("Hotkeys", "Audio"), TRANSLATE_NOOP("Hotkeys", "Volume Up"),
@@ -636,8 +573,8 @@ DEFINE_HOTKEY("AudioVolumeUp", TRANSLATE_NOOP("Hotkeys", "Audio"), TRANSLATE_NOO
                   g_settings.audio_output_volume = volume;
                   g_settings.audio_fast_forward_volume = volume;
                   SPU::GetOutputStream()->SetOutputVolume(volume);
-                  Host::AddIconOSDMessage("AudioControlHotkey", ICON_EMOJI_HIGH_VOLUME_SPEAKER,
-                                          fmt::format(TRANSLATE_FS("OSDMessage", "Volume: {}%"), volume), 5.0f);
+                  Host::AddIconOSDMessage(OSDMessageType::Quick, "AudioControlHotkey", ICON_EMOJI_HIGH_VOLUME_SPEAKER,
+                                          fmt::format(TRANSLATE_FS("OSDMessage", "Volume: {}%"), volume));
                 }
               })
 DEFINE_HOTKEY("AudioVolumeDown", TRANSLATE_NOOP("Hotkeys", "Audio"), TRANSLATE_NOOP("Hotkeys", "Volume Down"),
@@ -650,8 +587,8 @@ DEFINE_HOTKEY("AudioVolumeDown", TRANSLATE_NOOP("Hotkeys", "Audio"), TRANSLATE_N
                   g_settings.audio_output_volume = volume;
                   g_settings.audio_fast_forward_volume = volume;
                   SPU::GetOutputStream()->SetOutputVolume(volume);
-                  Host::AddIconOSDMessage("AudioControlHotkey", ICON_EMOJI_MEDIUM_VOLUME_SPEAKER,
-                                          fmt::format(TRANSLATE_FS("OSDMessage", "Volume: {}%"), volume), 5.0f);
+                  Host::AddIconOSDMessage(OSDMessageType::Quick, "AudioControlHotkey", ICON_EMOJI_MEDIUM_VOLUME_SPEAKER,
+                                          fmt::format(TRANSLATE_FS("OSDMessage", "Volume: {}%"), volume));
                 }
               })
 
@@ -697,13 +634,13 @@ DEFINE_HOTKEY("UndoLoadState", TRANSLATE_NOOP("Hotkeys", "Save States"), TRANSLA
   DEFINE_HOTKEY(global ? "LoadGameState" #slot : "LoadGlobalState" #slot, TRANSLATE_NOOP("Hotkeys", "Save States"),    \
                 name, [](s32 pressed) {                                                                                \
                   if (!pressed)                                                                                        \
-                    Host::RunOnCPUThread([]() { HotkeyLoadStateSlot(global, slot); });                                 \
+                    Host::RunOnCPUThread([]() { System::LoadStateFromSlot(global, slot); });                           \
                 })
 #define MAKE_SAVE_STATE_HOTKEY(global, slot, name)                                                                     \
   DEFINE_HOTKEY(global ? "SaveGameState" #slot : "SaveGlobalState" #slot, TRANSLATE_NOOP("Hotkeys", "Save States"),    \
                 name, [](s32 pressed) {                                                                                \
                   if (!pressed)                                                                                        \
-                    Host::RunOnCPUThread([]() { HotkeySaveStateSlot(global, slot); });                                 \
+                    Host::RunOnCPUThread([]() { System::SaveStateToSlot(global, slot); });                             \
                 })
 
 // clang-format off
@@ -765,11 +702,10 @@ DEFINE_HOTKEY("TogglePGXPCPU", TRANSLATE_NOOP("Hotkeys", "Debugging"),
                   // GPU thread is unchanged
                   g_settings.gpu_pgxp_cpu = !g_settings.gpu_pgxp_cpu;
 
-                  Host::AddIconOSDMessage("TogglePGXPCPU", ICON_FA_BEZIER_CURVE,
+                  Host::AddIconOSDMessage(OSDMessageType::Quick, "TogglePGXPCPU", ICON_FA_BEZIER_CURVE,
                                           g_settings.gpu_pgxp_cpu ?
                                             TRANSLATE_STR("OSDMessage", "PGXP CPU mode is now enabled.") :
-                                            TRANSLATE_STR("OSDMessage", "PGXP CPU mode is now disabled."),
-                                          Host::OSD_QUICK_DURATION);
+                                            TRANSLATE_STR("OSDMessage", "PGXP CPU mode is now disabled."));
 
                   CPU::PGXP::Shutdown();
                   CPU::PGXP::Initialize();
@@ -792,11 +728,10 @@ DEFINE_HOTKEY("TogglePGXPPreserveProjPrecision", TRANSLATE_NOOP("Hotkeys", "Debu
                   g_settings.gpu_pgxp_preserve_proj_fp = !g_settings.gpu_pgxp_preserve_proj_fp;
 
                   Host::AddIconOSDMessage(
-                    "TogglePGXPPreserveProjPrecision", ICON_FA_DRAW_POLYGON,
+                    OSDMessageType::Quick, "TogglePGXPPreserveProjPrecision", ICON_FA_DRAW_POLYGON,
                     g_settings.gpu_pgxp_preserve_proj_fp ?
                       TRANSLATE_STR("OSDMessage", "PGXP Preserve Projection Precision is now enabled.") :
-                      TRANSLATE_STR("OSDMessage", "PGXP Preserve Projection Precision is now disabled."),
-                    Host::OSD_QUICK_DURATION);
+                      TRANSLATE_STR("OSDMessage", "PGXP Preserve Projection Precision is now disabled."));
                 }
               })
 DEFINE_HOTKEY("ToggleVRAMView", TRANSLATE_NOOP("Hotkeys", "Debugging"), TRANSLATE_NOOP("Hotkeys", "Toggle VRAM View"),
@@ -809,11 +744,10 @@ DEFINE_HOTKEY("ToggleVRAMView", TRANSLATE_NOOP("Hotkeys", "Debugging"), TRANSLAT
                   g_settings.gpu_show_vram = !g_settings.gpu_show_vram;
                   GPUThread::UpdateSettings(true, false, false);
 
-                  Host::AddIconOSDMessage("ToggleVRAMView", ICON_FA_FILE,
+                  Host::AddIconOSDMessage(OSDMessageType::Quick, "ToggleVRAMView", ICON_FA_FILE,
                                           g_settings.gpu_show_vram ?
                                             TRANSLATE_STR("OSDMessage", "Now showing VRAM.") :
-                                            TRANSLATE_STR("OSDMessage", "Now showing display."),
-                                          Host::OSD_QUICK_DURATION);
+                                            TRANSLATE_STR("OSDMessage", "Now showing display."));
                 }
               })
 

@@ -177,7 +177,7 @@ AdvancedSettingsWidget::AdvancedSettingsWidget(SettingsWindow* dialog, QWidget* 
     m_ui.logLevel->addItem(QString::fromUtf8(Settings::GetLogLevelDisplayName(static_cast<Log::Level>(i))));
 
   SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.logLevel, "Logging", "LogLevel", &Settings::ParseLogLevelName,
-                                               &Settings::GetLogLevelName, Settings::DEFAULT_LOG_LEVEL);
+                                               &Settings::GetLogLevelName, Log::DEFAULT_LOG_LEVEL);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.logToConsole, "Logging", "LogToConsole", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.logToDebug, "Logging", "LogToDebug", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.logToWindow, "Logging", "LogToWindow", false);
@@ -189,7 +189,7 @@ AdvancedSettingsWidget::AdvancedSettingsWidget(SettingsWindow* dialog, QWidget* 
   connect(m_ui.logToFile, &QCheckBox::checkStateChanged, this, &AdvancedSettingsWidget::onAnyLogSinksChanged);
   onAnyLogSinksChanged(); // initialize enabled/disabled state of checkboxes
 
-  connect(m_ui.logChannels, &QToolButton::clicked, this, &AdvancedSettingsWidget::onLogChannelsButtonClicked);
+  connect(m_ui.logChannels, &QAbstractButton::clicked, this, &AdvancedSettingsWidget::onLogChannelsButtonClicked);
 
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.showDebugMenu, "Main", "ShowDebugMenu", false);
   connect(m_ui.showDebugMenu, &QCheckBox::checkStateChanged, g_main_window, &MainWindow::updateDebugMenuVisibility,
@@ -226,9 +226,9 @@ AdvancedSettingsWidget::~AdvancedSettingsWidget() = default;
 
 void AdvancedSettingsWidget::onLogChannelsButtonClicked()
 {
-  QMenu menu;
-  LogWindow::populateFilterMenu(&menu);
-  menu.exec(QCursor::pos());
+  QMenu* const menu = QtUtils::NewPopupMenu(this);
+  LogWindow::populateFilterMenu(menu);
+  menu->popup(QCursor::pos());
 }
 
 void AdvancedSettingsWidget::onAnyLogSinksChanged()
@@ -265,8 +265,13 @@ void AdvancedSettingsWidget::addTweakOptions()
                        static_cast<u32>(SaveStateCompressionMode::Count),
                        Settings::DEFAULT_SAVE_STATE_COMPRESSION_MODE);
 
+#if defined(_WIN32)
   addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Disable Window Rounded Corners"), "Main",
                         "DisableWindowRoundedCorners", false);
+#elif defined(__APPLE__)
+  addBooleanTweakOption(m_dialog, m_ui.tweakOptionTable, tr("Use Fractional Window Scale"), "Main",
+                        "UseFractionalWindowScale", true);
+#endif
 
   if (m_dialog->isPerGameSettings())
   {
@@ -340,7 +345,11 @@ void AdvancedSettingsWidget::onResetToDefaultClicked()
     setBooleanTweakOption(m_ui.tweakOptionTable, i++, false); // Load Devices From Save States
     setChoiceTweakOption(m_ui.tweakOptionTable, i++,
                          Settings::DEFAULT_SAVE_STATE_COMPRESSION_MODE); // Save State Compression
-    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false);            // Disable Window Rounded Corners
+#if defined(_WIN32)
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, false); // Disable Window Rounded Corners
+#elif defined(__APPLE__)
+    setBooleanTweakOption(m_ui.tweakOptionTable, i++, true); // Use Fractional Rendering Scale
+#endif
     setIntRangeTweakOption(m_ui.tweakOptionTable, i++,
                            static_cast<int>(Settings::DEFAULT_DMA_MAX_SLICE_TICKS)); // DMA max slice ticks
     setIntRangeTweakOption(m_ui.tweakOptionTable, i++,
@@ -382,6 +391,7 @@ void AdvancedSettingsWidget::onResetToDefaultClicked()
   sif->DeleteValue("Main", "LoadDevicesFromSaveStates");
   sif->DeleteValue("Main", "CompressSaveStates");
   sif->DeleteValue("Main", "DisableWindowRoundedCorners");
+  sif->DeleteValue("Main", "UseFractionalWindowScale");
   sif->DeleteValue("Display", "ActiveStartOffset");
   sif->DeleteValue("Display", "ActiveEndOffset");
   sif->DeleteValue("Display", "LineStartOffset");
@@ -408,7 +418,8 @@ void AdvancedSettingsWidget::onResetToDefaultClicked()
   sif->DeleteValue("PCDrv", "Enabled");
   sif->DeleteValue("PCDrv", "EnableWrites");
   sif->DeleteValue("PCDrv", "Root");
-  sif->Save();
+  QtHost::SaveGameSettings(sif, true);
+  g_emu_thread->reloadGameSettings();
   while (m_ui.tweakOptionTable->rowCount() > 0)
     m_ui.tweakOptionTable->removeRow(m_ui.tweakOptionTable->rowCount() - 1);
   addTweakOptions();

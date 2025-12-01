@@ -48,8 +48,9 @@ static void rc_alloc_helper_variable_memref_value(rc_richpresence_display_part_t
 
   condset = value->conditions;
   if (condset && !condset->next) {
-    /* single value - if it's only "measured" and "indirect" conditions, we can simplify to a memref */
-    if (condset->num_measured_conditions &&
+    /* single value - if it's a single Measured clause (including any AddSource/AddAddress helpers), we can
+     * simplify to a memref. If there are supporting clauses like MeasuredIf or ResetIf, we can't */
+    if (condset->num_measured_conditions == 1 &&
         !condset->num_pause_conditions && !condset->num_reset_conditions &&
         !condset->num_other_conditions && !condset->num_hittarget_conditions) {
       rc_condition_t* condition = condset->conditions;
@@ -537,6 +538,13 @@ void rc_parse_richpresence_internal(rc_richpresence_t* self, const char* script,
 
     } else if (strncmp(line, "Format:", 7) == 0) {
       line += 7;
+      if (endline - line == 11 && memcmp(line, "Unformatted", 11) == 0) {
+        /* for backwards compatibility with the comma rollout, we allow old scripts
+         * to define an Unformatted type mapped to VALUE, and new versions will ignore
+         * the definition and use the built-in macro. skip the next line (FormatType=) */
+        line = rc_parse_line(nextline, &endline, parse);
+        continue;
+      }
 
       lookup = RC_ALLOC_SCRATCH(rc_richpresence_lookup_t, parse);
       lookup->name = rc_alloc_str(parse, line, (int)(endline - line));
@@ -715,14 +723,19 @@ rc_memrefs_t* rc_richpresence_get_memrefs(rc_richpresence_t* self) {
 }
 
 void rc_update_richpresence(rc_richpresence_t* richpresence, rc_peek_t peek, void* peek_ud, void* unused_L) {
-  rc_richpresence_display_t* display;
+  (void)unused_L;
 
   rc_update_richpresence_memrefs(richpresence, peek, peek_ud);
   rc_update_values(richpresence->values, peek, peek_ud);
+  rc_update_richpresence_internal(richpresence, peek, peek_ud);
+}
+
+void rc_update_richpresence_internal(rc_richpresence_t* richpresence, rc_peek_t peek, void* peek_ud) {
+  rc_richpresence_display_t* display;
 
   for (display = richpresence->first_display; display; display = display->next) {
     if (display->has_required_hits)
-      rc_test_trigger(&display->trigger, peek, peek_ud, unused_L);
+      rc_test_trigger(&display->trigger, peek, peek_ud, NULL);
   }
 }
 

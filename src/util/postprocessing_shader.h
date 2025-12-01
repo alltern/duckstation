@@ -35,8 +35,12 @@ public:
   ALWAYS_INLINE std::vector<ShaderOption>& GetOptions() { return m_options; }
   ALWAYS_INLINE bool HasOptions() const { return !m_options.empty(); }
 
-  virtual bool IsValid() const = 0;
-  virtual bool WantsDepthBuffer() const = 0;
+  ALWAYS_INLINE bool IsEnabled() const { return m_enabled; }
+  ALWAYS_INLINE void SetEnabled(bool enabled) { m_enabled = enabled; }
+  ALWAYS_INLINE bool IsFinalStage() const { return m_final_stage; }
+  ALWAYS_INLINE void SetFinalStage(bool final_stage) { m_final_stage = final_stage; }
+  ALWAYS_INLINE bool WantsDepthBuffer() const { return m_wants_depth_buffer; }
+  ALWAYS_INLINE bool WantsUnscaledInput() const { return m_wants_unscaled_input; }
 
   std::vector<ShaderOption> TakeOptions();
   void LoadOptions(const SettingsInterface& si, const char* section);
@@ -44,14 +48,16 @@ public:
   const ShaderOption* GetOptionByName(std::string_view name) const;
   ShaderOption* GetOptionByName(std::string_view name);
 
-  virtual bool ResizeOutput(GPUTexture::Format format, u32 width, u32 height, Error* error) = 0;
+  virtual bool ResizeTargets(u32 source_width, u32 source_height, GPUTexture::Format target_format, u32 target_width,
+                             u32 target_height, u32 viewport_width, u32 viewport_height, Error* error);
 
   virtual bool CompilePipeline(GPUTexture::Format format, u32 width, u32 height, Error* error,
                                ProgressCallback* progress) = 0;
 
-  virtual GPUDevice::PresentResult Apply(GPUTexture* input_color, GPUTexture* input_depth, GPUTexture* final_target,
-                                         GSVector4i final_rect, s32 orig_width, s32 orig_height, s32 native_width,
-                                         s32 native_height, u32 target_width, u32 target_height, float time) = 0;
+  virtual GPUDevice::PresentResult Apply(GPUTexture* original_color, GPUTexture* input_color, GPUTexture* input_depth,
+                                         GPUTexture* final_target, GSVector4i final_rect, s32 orig_width,
+                                         s32 orig_height, s32 native_width, s32 native_height, u32 target_width,
+                                         u32 target_height, float time) = 0;
 
 protected:
   using OptionList = std::vector<ShaderOption>;
@@ -62,6 +68,10 @@ protected:
 
   std::string m_name;
   OptionList m_options;
+  bool m_enabled = false;
+  bool m_final_stage = false;
+  bool m_wants_depth_buffer = false;
+  bool m_wants_unscaled_input = false;
 };
 
 } // namespace PostProcessing

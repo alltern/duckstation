@@ -192,9 +192,7 @@ GameCheatSettingsWidget::GameCheatSettingsWidget(SettingsWindow* dialog, QWidget
   m_sort_model->sort(sorting_enabled ? 0 : -1, Qt::AscendingOrder);
   m_ui.cheatList->setModel(m_sort_model);
   m_ui.cheatList->setItemDelegate(new CheatListOptionDelegate(this, m_ui.cheatList));
-
   reloadList();
-  QtUtils::SetColumnWidthsForTreeView(m_ui.cheatList, {-1, 150});
 
   // We don't use the binder here, because they're binary - either enabled, or not in the file.
   m_ui.enableCheats->setChecked(sif->GetBoolValue("Cheats", "EnableCheats", false));
@@ -202,7 +200,7 @@ GameCheatSettingsWidget::GameCheatSettingsWidget(SettingsWindow* dialog, QWidget
   m_ui.sortCheats->setChecked(sorting_enabled);
 
   connect(m_ui.enableCheats, &QCheckBox::checkStateChanged, this, &GameCheatSettingsWidget::onEnableCheatsChanged);
-  connect(m_ui.sortCheats, &QPushButton::toggled, this, &GameCheatSettingsWidget::onSortCheatsToggled);
+  connect(m_ui.sortCheats, &QPushButton::clicked, this, &GameCheatSettingsWidget::onSortCheatsClicked);
   connect(m_ui.search, &QLineEdit::textChanged, this, &GameCheatSettingsWidget::onSearchFilterChanged);
   connect(m_ui.loadDatabaseCheats, &QCheckBox::checkStateChanged, this,
           &GameCheatSettingsWidget::onLoadDatabaseCheatsChanged);
@@ -210,10 +208,10 @@ GameCheatSettingsWidget::GameCheatSettingsWidget(SettingsWindow* dialog, QWidget
   connect(m_ui.cheatList, &QTreeView::customContextMenuRequested, this,
           &GameCheatSettingsWidget::onCheatListContextMenuRequested);
   connect(m_codes_model, &QStandardItemModel::itemChanged, this, &GameCheatSettingsWidget::onCheatListItemChanged);
-  connect(m_ui.add, &QToolButton::clicked, this, &GameCheatSettingsWidget::newCode);
-  connect(m_ui.remove, &QToolButton::clicked, this, &GameCheatSettingsWidget::onRemoveCodeClicked);
-  connect(m_ui.disableAll, &QToolButton::clicked, this, &GameCheatSettingsWidget::disableAllCheats);
-  connect(m_ui.reloadCheats, &QToolButton::clicked, this, &GameCheatSettingsWidget::onReloadClicked);
+  connect(m_ui.add, &QPushButton::clicked, this, &GameCheatSettingsWidget::newCode);
+  connect(m_ui.remove, &QPushButton::clicked, this, &GameCheatSettingsWidget::onRemoveCodeClicked);
+  connect(m_ui.disableAll, &QPushButton::clicked, this, &GameCheatSettingsWidget::disableAllCheats);
+  connect(m_ui.reloadCheats, &QPushButton::clicked, this, &GameCheatSettingsWidget::onReloadClicked);
   connect(m_ui.importCheats, &QPushButton::clicked, this, &GameCheatSettingsWidget::onImportClicked);
   connect(m_ui.exportCheats, &QPushButton::clicked, this, &GameCheatSettingsWidget::onExportClicked);
   connect(m_ui.clearCheats, &QPushButton::clicked, this, &GameCheatSettingsWidget::onClearClicked);
@@ -240,7 +238,7 @@ std::string GameCheatSettingsWidget::getPathForSavingCheats() const
 {
   // Check for the path without the hash first. If we have one of those, keep using it.
   std::string path = Cheats::GetChtFilename(m_dialog->getGameSerial(), std::nullopt, true);
-  if (!FileSystem::FileExists(path.c_str()))
+  if (!FileSystem::FileExists(path.c_str()) && m_dialog->isGameHashStable())
     path = Cheats::GetChtFilename(m_dialog->getGameSerial(), m_dialog->getGameHash(), true);
   return path;
 }
@@ -273,7 +271,7 @@ void GameCheatSettingsWidget::onEnableCheatsChanged(Qt::CheckState state)
   m_dialog->saveAndReloadGameSettings();
 }
 
-void GameCheatSettingsWidget::onSortCheatsToggled(bool checked)
+void GameCheatSettingsWidget::onSortCheatsClicked(bool checked)
 {
   m_sort_model->sort(checked ? 0 : -1, Qt::AscendingOrder);
 
@@ -346,25 +344,27 @@ void GameCheatSettingsWidget::onCheatListContextMenuRequested(const QPoint& pos)
   Cheats::CodeInfo* selected = getSelectedCode();
   const std::string selected_code = selected ? selected->name : std::string();
 
-  QMenu context_menu(m_ui.cheatList);
+  QMenu* const context_menu = QtUtils::NewPopupMenu(m_ui.cheatList);
 
-  QAction* add = context_menu.addAction(QIcon::fromTheme(QStringLiteral("add-line")), tr("Add Cheat..."));
-  connect(add, &QAction::triggered, this, &GameCheatSettingsWidget::newCode);
-  QAction* edit = context_menu.addAction(QIcon::fromTheme(QStringLiteral("mag-line")), tr("Edit Cheat..."));
-  edit->setEnabled(selected != nullptr);
-  connect(edit, &QAction::triggered, this, [this, &selected_code]() { editCode(selected_code); });
-  QAction* remove = context_menu.addAction(QIcon::fromTheme(QStringLiteral("minus-line")), tr("Remove Cheat"));
-  remove->setEnabled(selected != nullptr);
-  connect(remove, &QAction::triggered, this, [this, &selected_code]() { removeCode(selected_code, true); });
-  context_menu.addSeparator();
+  context_menu->addAction(QIcon::fromTheme(QStringLiteral("add-line")), tr("Add Cheat..."), this,
+                          &GameCheatSettingsWidget::newCode);
+  context_menu
+    ->addAction(QIcon::fromTheme(QStringLiteral("mag-line")), tr("Edit Cheat..."),
+                [this, &selected_code]() { editCode(selected_code); })
+    ->setEnabled(selected != nullptr);
+  context_menu
+    ->addAction(QIcon::fromTheme(QStringLiteral("minus-line")), tr("Remove Cheat"),
+                [this, &selected_code]() { removeCode(selected_code, true); })
+    ->setEnabled(selected != nullptr);
+  context_menu->addSeparator();
 
-  QAction* disable_all = context_menu.addAction(QIcon::fromTheme(QStringLiteral("chat-off-line")), tr("Disable All Cheats"));
-  connect(disable_all, &QAction::triggered, this, &GameCheatSettingsWidget::disableAllCheats);
+  context_menu->addAction(QIcon::fromTheme(QStringLiteral("chat-off-line")), tr("Disable All Cheats"), this,
+                          &GameCheatSettingsWidget::disableAllCheats);
 
-  QAction* reload = context_menu.addAction(QIcon::fromTheme(QStringLiteral("refresh-line")), tr("Reload Cheats"));
-  connect(reload, &QAction::triggered, this, &GameCheatSettingsWidget::onReloadClicked);
+  context_menu->addAction(QIcon::fromTheme(QStringLiteral("refresh-line")), tr("Reload Cheats"), this,
+                          &GameCheatSettingsWidget::onReloadClicked);
 
-  context_menu.exec(m_ui.cheatList->mapToGlobal(pos));
+  context_menu->popup(m_ui.cheatList->mapToGlobal(pos));
 }
 
 void GameCheatSettingsWidget::onRemoveCodeClicked()
@@ -396,58 +396,40 @@ void GameCheatSettingsWidget::checkForMasterDisable()
 
   if (!game_settings_enabled)
   {
-    QMessageBox mbox(this);
-    mbox.setIcon(QMessageBox::Warning);
-    mbox.setWindowTitle(tr("Confirm Game Settings Enable"));
-    mbox.setWindowIcon(QtHost::GetAppIcon());
-    mbox.setTextFormat(Qt::RichText);
-    mbox.setText(
+    QMessageBox* const mbox = QtUtils::NewMessageBox(
+      this, QMessageBox::Warning, tr("Confirm Game Settings Enable"),
       tr("<h3>Game settings are currently disabled.</h3><p>This is <strong>not</strong> the default. Enabling this "
-         "cheat will not have any effect until game settings are enabled. Do you want to do this now?"));
-
-    mbox.addButton(QMessageBox::Yes);
-    mbox.addButton(QMessageBox::No);
-
-    QCheckBox* cb = new QCheckBox(&mbox);
+         "cheat will not have any effect until game settings are enabled. Do you want to do this now?"),
+      QMessageBox::Yes | QMessageBox::No);
+    QCheckBox* cb = new QCheckBox(mbox);
     cb->setText(tr("Do not show again"));
-    mbox.setCheckBox(cb);
+    mbox->setCheckBox(cb);
 
-    const int res = mbox.exec();
-    if (res == QMessageBox::No)
-    {
-      m_master_enable_ignored = cb->isChecked();
-    }
-    else
-    {
+    connect(mbox, &QMessageBox::accepted, this, []() {
       Host::SetBaseBoolSettingValue("Main", "ApplyGameSettings", true);
       Host::CommitBaseSettingChanges();
       g_emu_thread->applySettings(false);
-    }
+    });
+
+    mbox->show();
   }
 
   if (!cheats_enabled)
   {
-    QMessageBox mbox(this);
-    mbox.setIcon(QMessageBox::Warning);
-    mbox.setWindowTitle(tr("Confirm Cheat Enable"));
-    mbox.setWindowIcon(QtHost::GetAppIcon());
-    mbox.setTextFormat(Qt::RichText);
-    mbox.setText(tr("<h3>Cheats are not currently enabled for this game.</h3><p>Enabling this cheat will not have any "
-                    "effect until cheats are enabled for this game. Do you want to do this now?"));
-
-    mbox.addButton(QMessageBox::Yes);
-    mbox.addButton(QMessageBox::No);
-
-    QCheckBox* cb = new QCheckBox(&mbox);
+    QMessageBox* const mbox = QtUtils::NewMessageBox(
+      this, QMessageBox::Warning, tr("Confirm Cheat Enable"),
+      tr("<h3>Cheats are not currently enabled for this game.</h3><p>Enabling this cheat will not have any "
+         "effect until cheats are enabled for this game. Do you want to do this now?"),
+      QMessageBox::Yes | QMessageBox::No);
+    QCheckBox* cb = new QCheckBox(mbox);
     cb->setText(tr("Do not show again"));
     cb->setChecked(m_master_enable_ignored);
-    mbox.setCheckBox(cb);
+    mbox->setCheckBox(cb);
 
-    const int res = mbox.exec();
-    if (res == QMessageBox::No)
-      m_master_enable_ignored = cb->isChecked();
-    else
-      m_ui.enableCheats->setChecked(true);
+    connect(mbox, &QMessageBox::accepted, this, [this]() { m_ui.enableCheats->setChecked(true); });
+    connect(mbox, &QMessageBox::rejected, this, [this, cb]() { m_master_enable_ignored = cb->isChecked(); });
+
+    mbox->show();
   }
 }
 
@@ -554,6 +536,16 @@ void GameCheatSettingsWidget::reloadList()
 
   // Expand all items, and ensure the size is correct. Otherwise editing codes resizes it.
   expandAllItems();
+
+  // Set column sizes, option dropdown gets less space.
+  // Qt asserts if we do this without any data.
+  if (m_codes.empty())
+    return;
+
+  QHeaderView* const cheat_list_header = m_ui.cheatList->header();
+  cheat_list_header->setSectionResizeMode(0, QHeaderView::Stretch);
+  cheat_list_header->setSectionResizeMode(1, QHeaderView::Fixed);
+  cheat_list_header->resizeSection(1, 150);
 }
 
 void GameCheatSettingsWidget::expandAllItems()
@@ -564,12 +556,10 @@ void GameCheatSettingsWidget::expandAllItems()
 
 void GameCheatSettingsWidget::onImportClicked()
 {
-  QMenu menu(this);
-  connect(menu.addAction(tr("From File...")), &QAction::triggered, this,
-          &GameCheatSettingsWidget::onImportFromFileTriggered);
-  connect(menu.addAction(tr("From Text...")), &QAction::triggered, this,
-          &GameCheatSettingsWidget::onImportFromTextTriggered);
-  menu.exec(QCursor::pos());
+  QMenu* const menu = QtUtils::NewPopupMenu(this);
+  menu->addAction(tr("From File..."), this, &GameCheatSettingsWidget::onImportFromFileTriggered);
+  menu->addAction(tr("From Text..."), this, &GameCheatSettingsWidget::onImportFromTextTriggered);
+  menu->popup(QCursor::pos());
 }
 
 void GameCheatSettingsWidget::onImportFromFileTriggered()
@@ -584,8 +574,8 @@ void GameCheatSettingsWidget::onImportFromFileTriggered()
   const std::optional<std::string> file_contents = FileSystem::ReadFileToString(filename.toStdString().c_str(), &error);
   if (!file_contents.has_value())
   {
-    QMessageBox::critical(this, tr("Error"),
-                          tr("Failed to read file:\n%1").arg(QString::fromStdString(error.GetDescription())));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                             tr("Failed to read file:\n%1").arg(QString::fromStdString(error.GetDescription())));
     return;
   }
 
@@ -607,15 +597,15 @@ void GameCheatSettingsWidget::importCodes(const std::string& file_contents)
   Cheats::CodeInfoList new_codes;
   if (!Cheats::ImportCodesFromString(&new_codes, file_contents, Cheats::FileFormat::Unknown, true, &error))
   {
-    QMessageBox::critical(this, tr("Error"),
-                          tr("Failed to parse file:\n%1").arg(QString::fromStdString(error.GetDescription())));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                             tr("Failed to parse file:\n%1").arg(QString::fromStdString(error.GetDescription())));
     return;
   }
 
   if (!Cheats::SaveCodesToFile(getPathForSavingCheats().c_str(), new_codes, &error))
   {
-    QMessageBox::critical(this, tr("Error"),
-                          tr("Failed to save file:\n%1").arg(QString::fromStdString(error.GetDescription())));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                             tr("Failed to save file:\n%1").arg(QString::fromStdString(error.GetDescription())));
   }
 
   reloadList();
@@ -624,17 +614,16 @@ void GameCheatSettingsWidget::importCodes(const std::string& file_contents)
 
 void GameCheatSettingsWidget::newCode()
 {
-  Cheats::CodeInfo new_code;
-  CheatCodeEditorDialog dlg(this, &new_code, getGroupNames());
-  if (dlg.exec() == QDialog::Rejected)
-  {
-    // cancelled
-    return;
-  }
+  CheatCodeEditorDialog* const dlg = new CheatCodeEditorDialog(this, Cheats::CodeInfo(), getGroupNames());
+  dlg->setAttribute(Qt::WA_DeleteOnClose);
 
-  // no need to reload cheats yet, it's not active. just refresh the list
-  reloadList();
-  g_emu_thread->reloadCheats(true, false, false, true);
+  connect(dlg, &QDialog::accepted, this, [this] {
+    // no need to reload cheats yet, it's not active. just refresh the list
+    reloadList();
+    g_emu_thread->reloadCheats(true, false, false, true);
+  });
+
+  dlg->open();
 }
 
 void GameCheatSettingsWidget::editCode(const std::string_view code_name)
@@ -643,15 +632,15 @@ void GameCheatSettingsWidget::editCode(const std::string_view code_name)
   if (!code)
     return;
 
-  CheatCodeEditorDialog dlg(this, code, getGroupNames());
-  if (dlg.exec() == QDialog::Rejected)
-  {
-    // no changes
-    return;
-  }
+  CheatCodeEditorDialog* const dlg = new CheatCodeEditorDialog(this, *code, getGroupNames());
+  dlg->setAttribute(Qt::WA_DeleteOnClose);
 
-  reloadList();
-  g_emu_thread->reloadCheats(true, true, false, true);
+  connect(dlg, &QDialog::accepted, this, [this] {
+    reloadList();
+    g_emu_thread->reloadCheats(true, true, false, true);
+  });
+
+  dlg->open();
 }
 
 void GameCheatSettingsWidget::removeCode(const std::string_view code_name, bool confirm)
@@ -662,16 +651,18 @@ void GameCheatSettingsWidget::removeCode(const std::string_view code_name, bool 
 
   if (code->from_database)
   {
-    QMessageBox::critical(this, tr("Error"),
-                          tr("This code is from the built-in cheat database, and cannot be removed. To hide this code, "
-                             "uncheck the \"Load Database Cheats\" option."));
+    QtUtils::AsyncMessageBox(
+      this, QMessageBox::Critical, tr("Error"),
+      tr("This code is from the built-in cheat database, and cannot be removed. To hide this code, "
+         "uncheck the \"Load Database Cheats\" option."));
     return;
   }
 
-  if (QMessageBox::question(this, tr("Confirm Removal"),
-                            tr("You are removing the code named '%1'. You cannot undo this action, are you sure you "
-                               "wish to delete this code?")
-                              .arg(QtUtils::StringViewToQString(code_name))) != QMessageBox::Yes)
+  if (QtUtils::MessageBoxQuestion(
+        this, tr("Confirm Removal"),
+        tr("You are removing the code named '%1'. You cannot undo this action, are you sure you "
+           "wish to delete this code?")
+          .arg(QtUtils::StringViewToQString(code_name))) != QMessageBox::Yes)
   {
     return;
   }
@@ -679,8 +670,8 @@ void GameCheatSettingsWidget::removeCode(const std::string_view code_name, bool 
   Error error;
   if (!Cheats::UpdateCodeInFile(getPathForSavingCheats().c_str(), code->name, nullptr, &error))
   {
-    QMessageBox::critical(this, tr("Error"),
-                          tr("Failed to save file:\n%1").arg(QString::fromStdString(error.GetDescription())));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                             tr("Failed to save file:\n%1").arg(QString::fromStdString(error.GetDescription())));
     return;
   }
 
@@ -699,18 +690,18 @@ void GameCheatSettingsWidget::onExportClicked()
   Error error;
   if (!Cheats::ExportCodesToFile(filename.toStdString(), m_codes, &error))
   {
-    QMessageBox::critical(this, tr("Error"),
-                          tr("Failed to save cheat file:\n%1").arg(QString::fromStdString(error.GetDescription())));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                             tr("Failed to save cheat file:\n%1").arg(QString::fromStdString(error.GetDescription())));
   }
 }
 
 void GameCheatSettingsWidget::onClearClicked()
 {
-  if (QMessageBox::question(this, tr("Confirm Removal"),
-                            tr("You are removing all cheats manually added for this game. This action cannot be "
-                               "reversed.\n\nAny database cheats will still be loaded and present unless you uncheck "
-                               "the \"Load Database Cheats\" option.\n\nAre you sure you want to continue?")) !=
-      QMessageBox::Yes)
+  if (QtUtils::MessageBoxQuestion(
+        this, tr("Confirm Removal"),
+        tr("You are removing all cheats manually added for this game. This action cannot be "
+           "reversed.\n\nAny database cheats will still be loaded and present unless you uncheck "
+           "the \"Load Database Cheats\" option.\n\nAre you sure you want to continue?")) != QMessageBox::Yes)
   {
     return;
   }
@@ -798,9 +789,9 @@ void GameCheatSettingsWidget::populateTreeWidgetItem(QStandardItem* parent, cons
   }
 }
 
-CheatCodeEditorDialog::CheatCodeEditorDialog(GameCheatSettingsWidget* parent, Cheats::CodeInfo* code,
+CheatCodeEditorDialog::CheatCodeEditorDialog(GameCheatSettingsWidget* parent, Cheats::CodeInfo code,
                                              const QStringList& group_names)
-  : QDialog(parent), m_parent(parent), m_code(code)
+  : QDialog(parent), m_parent(parent), m_code(std::move(code))
 {
   m_ui.setupUi(this);
   setupAdditionalUi(group_names);
@@ -852,15 +843,32 @@ void CheatCodeEditorDialog::saveClicked()
   std::string new_name = m_ui.name->text().toStdString();
   if (new_name.empty())
   {
-    QMessageBox::critical(this, tr("Error"), tr("Name cannot be empty."));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"), tr("Name cannot be empty."));
     return;
   }
 
-  std::string new_body = m_ui.instructions->toPlainText().toStdString();
+  std::string new_body = QtUtils::NormalizeLineEndings(m_ui.instructions->toPlainText()).trimmed().toStdString();
   if (new_body.empty())
   {
-    QMessageBox::critical(this, tr("Error"), tr("Instructions cannot be empty."));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"), tr("Instructions cannot be empty."));
     return;
+  }
+
+  const Cheats::CodeType new_type = static_cast<Cheats::CodeType>(m_ui.type->currentIndex());
+  const Cheats::CodeActivation new_activation = static_cast<Cheats::CodeActivation>(m_ui.activation->currentIndex());
+
+  // Validate it before trying to save it.
+  Error error;
+  if (!Cheats::ValidateCodeBody(new_name, new_type, new_activation, new_body, &error))
+  {
+    if (QtUtils::MessageBoxQuestion(
+          this, tr("Error"),
+          tr("The entered cheat code is not valid:\n\n%1\n\nTrying to use this cheat will not work "
+             "as expected. Do you want to continue?")
+            .arg(QString::fromStdString(error.GetDescription()))) == QMessageBox::No)
+    {
+      return;
+    }
   }
 
   // name actually includes the prefix
@@ -872,49 +880,52 @@ void CheatCodeEditorDialog::saveClicked()
   }
 
   // if the name has changed, then we need to make sure it hasn't already been used
-  if (new_name != m_code->name && m_parent->hasCodeWithName(new_name))
+  if (new_name != m_code.name && m_parent->hasCodeWithName(new_name))
   {
-    QMessageBox::critical(this, tr("Error"),
-                          tr("A code with the name '%1' already exists.").arg(QString::fromStdString(new_name)));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                             tr("A code with the name '%1' already exists.").arg(QString::fromStdString(new_name)));
     return;
   }
 
-  std::string old_name = std::move(m_code->name);
+  std::string old_name = std::move(m_code.name);
 
   // cheats coming from the database need to be copied into the user's file
-  if (m_code->from_database)
+  if (m_code.from_database)
   {
-    m_code->from_database = false;
+    m_code.from_database = false;
     old_name.clear();
   }
 
-  m_code->name = std::move(new_name);
-  m_code->description = m_ui.description->toPlainText().replace('\n', ' ').toStdString();
-  m_code->type = static_cast<Cheats::CodeType>(m_ui.type->currentIndex());
-  m_code->activation = static_cast<Cheats::CodeActivation>(m_ui.activation->currentIndex());
-  m_code->body = std::move(new_body);
+  m_code.name = std::move(new_name);
+  m_code.description = QtUtils::NormalizeLineEndings(m_ui.description->toPlainText())
+                         .replace(QChar('\n'), QChar(' '))
+                         .trimmed()
+                         .toStdString();
+  m_code.type = new_type;
+  m_code.activation = new_activation;
+  m_code.body = std::move(new_body);
 
-  m_code->option_range_start = 0;
-  m_code->option_range_end = 0;
-  m_code->options = {};
+  m_code.option_range_start = 0;
+  m_code.option_range_end = 0;
+  m_code.options = {};
   if (m_ui.optionsType->currentIndex() == 1)
   {
     // choices
-    m_code->options = std::move(m_new_options);
+    m_code.options = std::move(m_new_options);
   }
   else if (m_ui.optionsType->currentIndex() == 2)
   {
     // range
-    m_code->option_range_start = static_cast<u16>(m_ui.rangeMin->value());
-    m_code->option_range_end = static_cast<u16>(m_ui.rangeMax->value());
+    m_code.option_range_start = static_cast<u16>(m_ui.rangeMin->value());
+    m_code.option_range_end = static_cast<u16>(m_ui.rangeMax->value());
   }
 
   std::string path = m_parent->getPathForSavingCheats();
-  Error error;
-  if (!Cheats::UpdateCodeInFile(path.c_str(), old_name, m_code, &error))
+  if (!Cheats::UpdateCodeInFile(path.c_str(), old_name, &m_code, &error))
   {
-    QMessageBox::critical(this, tr("Error"),
-                          tr("Failed to save cheat code:\n%1").arg(QString::fromStdString(error.GetDescription())));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                             tr("Failed to save cheat code:\n%1").arg(QString::fromStdString(error.GetDescription())));
+    return;
   }
 
   accept();
@@ -939,9 +950,10 @@ void CheatCodeEditorDialog::onRangeMaxChanged(int value)
 
 void CheatCodeEditorDialog::onEditChoiceClicked()
 {
-  GameCheatCodeChoiceEditorDialog dlg(this, m_new_options);
-  if (dlg.exec() == QDialog::Accepted)
-    m_new_options = dlg.getNewOptions();
+  GameCheatCodeChoiceEditorDialog* const dlg = new GameCheatCodeChoiceEditorDialog(this, m_new_options);
+  dlg->setAttribute(Qt::WA_DeleteOnClose);
+  connect(dlg, &QDialog::accepted, this, [this, dlg] { m_new_options = dlg->getNewOptions(); });
+  dlg->open();
 }
 
 void CheatCodeEditorDialog::setupAdditionalUi(const QStringList& group_names)
@@ -962,10 +974,10 @@ void CheatCodeEditorDialog::setupAdditionalUi(const QStringList& group_names)
 
 void CheatCodeEditorDialog::fillUi()
 {
-  m_ui.name->setText(QtUtils::StringViewToQString(m_code->GetNamePart()));
-  m_ui.description->setPlainText(QString::fromStdString(m_code->description));
+  m_ui.name->setText(QtUtils::StringViewToQString(m_code.GetNamePart()));
+  m_ui.description->setPlainText(QString::fromStdString(m_code.description));
 
-  const std::string_view group = m_code->GetNameParentPart();
+  const std::string_view group = m_code.GetNameParentPart();
   if (group.empty())
   {
     // ungrouped is always first
@@ -985,16 +997,16 @@ void CheatCodeEditorDialog::fillUi()
     m_ui.group->setCurrentIndex(index);
   }
 
-  m_ui.type->setCurrentIndex(static_cast<int>(m_code->type));
-  m_ui.activation->setCurrentIndex(static_cast<int>(m_code->activation));
+  m_ui.type->setCurrentIndex(static_cast<int>(m_code.type));
+  m_ui.activation->setCurrentIndex(static_cast<int>(m_code.activation));
 
-  m_ui.instructions->setPlainText(QString::fromStdString(m_code->body));
+  m_ui.instructions->setPlainText(QString::fromStdString(m_code.body));
 
-  m_ui.rangeMin->setValue(static_cast<int>(m_code->option_range_start));
-  m_ui.rangeMax->setValue(static_cast<int>(m_code->option_range_end));
-  m_new_options = m_code->options;
+  m_ui.rangeMin->setValue(static_cast<int>(m_code.option_range_start));
+  m_ui.rangeMax->setValue(static_cast<int>(m_code.option_range_end));
+  m_new_options = m_code.options;
 
-  m_ui.optionsType->setCurrentIndex(m_code->HasOptionRange() ? 2 : (m_code->HasOptionChoices() ? 1 : 0));
+  m_ui.optionsType->setCurrentIndex(m_code.HasOptionRange() ? 2 : (m_code.HasOptionChoices() ? 1 : 0));
   onOptionTypeChanged(m_ui.optionsType->currentIndex());
 }
 
@@ -1004,8 +1016,8 @@ GameCheatCodeChoiceEditorDialog::GameCheatCodeChoiceEditorDialog(QWidget* parent
   m_ui.setupUi(this);
   QtUtils::SetColumnWidthsForTreeView(m_ui.optionList, {-1, 150});
 
-  connect(m_ui.add, &QToolButton::clicked, this, &GameCheatCodeChoiceEditorDialog::onAddClicked);
-  connect(m_ui.remove, &QToolButton::clicked, this, &GameCheatCodeChoiceEditorDialog::onRemoveClicked);
+  connect(m_ui.add, &QPushButton::clicked, this, &GameCheatCodeChoiceEditorDialog::onAddClicked);
+  connect(m_ui.remove, &QPushButton::clicked, this, &GameCheatCodeChoiceEditorDialog::onRemoveClicked);
   connect(m_ui.buttonBox, &QDialogButtonBox::accepted, this, &GameCheatCodeChoiceEditorDialog::onSaveClicked);
   connect(m_ui.buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
@@ -1048,7 +1060,7 @@ void GameCheatCodeChoiceEditorDialog::onSaveClicked()
   const int count = m_ui.optionList->topLevelItemCount();
   if (count == 0)
   {
-    QMessageBox::critical(this, tr("Error"), tr("At least one option must be defined."));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"), tr("At least one option must be defined."));
     return;
   }
 
@@ -1063,7 +1075,8 @@ void GameCheatCodeChoiceEditorDialog::onSaveClicked()
 
       if (m_ui.optionList->topLevelItem(j)->text(0) == this_name)
       {
-        QMessageBox::critical(this, tr("Error"), tr("The option '%1' is defined twice.").arg(this_name));
+        QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                                 tr("The option '%1' is defined twice.").arg(this_name));
         return;
       }
     }
@@ -1072,8 +1085,8 @@ void GameCheatCodeChoiceEditorDialog::onSaveClicked()
     const QString this_value = it->text(1);
     if (bool ok; this_value.toUInt(&ok), !ok)
     {
-      QMessageBox::critical(this, tr("Error"),
-                            tr("The option '%1' does not have a valid value. It must be a number.").arg(this_name));
+      QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                               tr("The option '%1' does not have a valid value. It must be a number.").arg(this_name));
       return;
     }
   }

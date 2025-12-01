@@ -25,6 +25,7 @@
 #include <bit>
 #include <iomanip>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <type_traits>
@@ -40,18 +41,22 @@ namespace GameDatabase {
 enum : u32
 {
   GAME_DATABASE_CACHE_SIGNATURE = 0x45434C48,
-  GAME_DATABASE_CACHE_VERSION = 27,
+  GAME_DATABASE_CACHE_VERSION = 33,
 };
 
 static const Entry* GetEntryForId(std::string_view code);
 
+static void EnsureLoaded();
+static void Load();
 static bool LoadFromCache();
 static bool SaveToCache();
 
 static bool LoadGameDBYaml();
 static bool ParseYamlEntry(Entry* entry, const ryml::ConstNodeRef& value);
+static bool ParseYamlDiscSetEntry(DiscSetEntry* entry, const ryml::ConstNodeRef& value);
 static bool ParseYamlCodes(PreferUnorderedStringMap<std::string_view>& lookup, const ryml::ConstNodeRef& value,
                            std::string_view serial);
+static void BindDiscSetsToEntries();
 static bool LoadTrackHashes();
 
 static constexpr const std::array<const char*, static_cast<int>(CompatibilityRating::Count)>
@@ -85,6 +90,7 @@ static constexpr const std::array s_trait_names = {
   "ForceFullBoot",
   "DisableAutoAnalogMode",
   "DisableMultitap",
+  "DisableFastForwardMemoryCardAccess",
   "DisableCDROMReadSpeedup",
   "DisableCDROMSeekSpeedup",
   "DisableCDROMSpeedupOnMDEC",
@@ -95,6 +101,7 @@ static constexpr const std::array s_trait_names = {
   "DisableSpriteTextureFiltering",
   "DisableScaledDithering",
   "DisableScaledInterlacing",
+  "DisableAllBordersCrop",
   "DisableWidescreen",
   "DisablePGXP",
   "DisablePGXPCulling",
@@ -121,6 +128,7 @@ static constexpr const std::array s_trait_display_names = {
   TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Force Full Boot", "GameDatabase::Trait"),
   TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable Automatic Analog Mode", "GameDatabase::Trait"),
   TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable Multitap", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable Fast Forward Memory Card Access", "GameDatabase::Trait"),
   TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable CD-ROM Read Speedup", "GameDatabase::Trait"),
   TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable CD-ROM Seek Speedup", "GameDatabase::Trait"),
   TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable CD-ROM Speedup on MDEC", "GameDatabase::Trait"),
@@ -131,6 +139,7 @@ static constexpr const std::array s_trait_display_names = {
   TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable Sprite Texture Filtering", "GameDatabase::Trait"),
   TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable Scaled Dithering", "GameDatabase::Trait"),
   TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable Scaled Interlacing", "GameDatabase::Trait"),
+  TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable All Borders Crop", "GameDatabase::Trait"),
   TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable Widescreen", "GameDatabase::Trait"),
   TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable PGXP", "GameDatabase::Trait"),
   TRANSLATE_DISAMBIG_NOOP("GameDatabase", "Disable PGXP Culling", "GameDatabase::Trait"),
@@ -154,32 +163,51 @@ static constexpr std::array s_language_names = {
 static_assert(s_language_names.size() == static_cast<size_t>(Language::MaxCount));
 
 static constexpr const char* GAMEDB_YAML_FILENAME = "gamedb.yaml";
+static constexpr const char* DISCSETS_YAML_FILENAME = "discsets.yaml";
 static constexpr const char* DISCDB_YAML_FILENAME = "discdb.yaml";
 static DisplayDeinterlacingMode DEFAULT_DEINTERLACING_MODE = DisplayDeinterlacingMode::Adaptive;
 
-static bool s_loaded = false;
-static bool s_track_hashes_loaded = false;
+namespace {
+struct State
+{
+  bool loaded;
+  bool track_hashes_loaded;
 
-static DynamicHeapArray<u8> s_db_data; // we take strings from the data, so store a copy
-static std::vector<GameDatabase::Entry> s_entries;
-static PreferUnorderedStringMap<u32> s_code_lookup;
+  DynamicHeapArray<u8> db_data;          // we take strings from the data, so store a copy
+  DynamicHeapArray<u8> disc_set_db_data; // if loaded from binary cache, this will be empty
 
-static TrackHashesMap s_track_hashes_map;
+  std::vector<GameDatabase::Entry> entries;
+  std::vector<GameDatabase::DiscSetEntry> disc_sets;
+  PreferUnorderedStringMap<u32> code_lookup;
+
+  TrackHashesMap track_hashes_map;
+
+  std::once_flag load_once_flag;
+};
+} // namespace
+
+ALIGN_TO_CACHE_LINE static State s_state;
+
 } // namespace GameDatabase
 
 void GameDatabase::EnsureLoaded()
 {
-  if (s_loaded)
+  if (s_state.loaded)
     return;
 
-  Timer timer;
+  std::call_once(s_state.load_once_flag, &GameDatabase::Load);
+}
 
-  s_loaded = true;
+void GameDatabase::Load()
+{
+  Timer timer;
 
   if (!LoadFromCache())
   {
-    s_entries = {};
-    s_code_lookup = {};
+    s_state.entries = {};
+    s_state.code_lookup = {};
+    s_state.db_data.deallocate();
+    s_state.disc_set_db_data.deallocate();
 
     if (LoadGameDBYaml())
     {
@@ -187,19 +215,16 @@ void GameDatabase::EnsureLoaded()
     }
     else
     {
-      s_entries = {};
-      s_code_lookup = {};
+      s_state.entries = {};
+      s_state.code_lookup = {};
+      s_state.db_data.deallocate();
+      s_state.disc_set_db_data.deallocate();
     }
   }
 
-  INFO_LOG("Database load of {} entries took {:.0f}ms.", s_entries.size(), timer.GetTimeMilliseconds());
-}
+  s_state.loaded = true;
 
-void GameDatabase::Unload()
-{
-  s_entries = {};
-  s_code_lookup = {};
-  s_loaded = false;
+  INFO_LOG("Database load of {} entries took {:.0f}ms.", s_state.entries.size(), timer.GetTimeMilliseconds());
 }
 
 const GameDatabase::Entry* GameDatabase::GetEntryForId(std::string_view code)
@@ -209,8 +234,8 @@ const GameDatabase::Entry* GameDatabase::GetEntryForId(std::string_view code)
 
   EnsureLoaded();
 
-  auto iter = s_code_lookup.find(code);
-  return (iter != s_code_lookup.end()) ? &s_entries[iter->second] : nullptr;
+  auto iter = s_state.code_lookup.find(code);
+  return (iter != s_state.code_lookup.end()) ? &s_state.entries[iter->second] : nullptr;
 }
 
 std::string GameDatabase::GetSerialForDisc(CDImage* image)
@@ -278,9 +303,9 @@ const GameDatabase::Entry* GameDatabase::GetEntryForSerial(std::string_view seri
   EnsureLoaded();
 
   const auto it =
-    std::lower_bound(s_entries.cbegin(), s_entries.cend(), serial,
+    std::lower_bound(s_state.entries.cbegin(), s_state.entries.cend(), serial,
                      [](const Entry& entry, const std::string_view& search) { return (entry.serial < search); });
-  return (it != s_entries.end() && it->serial == serial) ? &(*it) : nullptr;
+  return (it != s_state.entries.end() && it->serial == serial) ? &(*it) : nullptr;
 }
 
 const char* GameDatabase::GetTraitName(Trait trait)
@@ -358,6 +383,46 @@ SmallString GameDatabase::Entry::GetLanguagesString() const
     ret.append(TRANSLATE_SV("GameDatabase", "Unknown"));
 
   return ret;
+}
+
+std::string_view GameDatabase::Entry::GetDisplayTitle(bool localized) const
+{
+  return (localized && !localized_title.empty()) ? localized_title : title;
+}
+
+std::string_view GameDatabase::Entry::GetSortTitle() const
+{
+  return !sort_title.empty() ? sort_title : title;
+}
+
+std::string_view GameDatabase::Entry::GetSaveTitle() const
+{
+  return !save_title.empty() ? save_title : title;
+}
+
+bool GameDatabase::Entry::IsFirstDiscInSet() const
+{
+  return (disc_set && disc_set->GetFirstSerial() == serial);
+}
+
+std::string_view GameDatabase::DiscSetEntry::GetDisplayTitle(bool localized) const
+{
+  return (localized && !localized_title.empty()) ? localized_title : title;
+}
+
+std::string_view GameDatabase::DiscSetEntry::GetSortTitle() const
+{
+  return !sort_title.empty() ? sort_title : title;
+}
+
+std::string_view GameDatabase::DiscSetEntry::GetSaveTitle() const
+{
+  return !save_title.empty() ? save_title : title;
+}
+
+std::string_view GameDatabase::DiscSetEntry::GetFirstSerial() const
+{
+  return serials[0];
 }
 
 void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_messages) const
@@ -443,25 +508,30 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
                Settings::GetLineDetectModeName(settings.gpu_line_detect_mode));
     }
   }
+  if (cpu_overclock.has_value() && (!settings.cpu_overclock_enable || settings.disable_all_enhancements))
+  {
+    settings.SetCPUOverclockPercent(cpu_overclock.value());
+    settings.cpu_overclock_enable = settings.cpu_overclock_active = true;
+    if (display_osd_messages)
+      INFO_LOG("GameDB: CPU overclock set to {}.", cpu_overclock.value());
+  }
 
-  SmallStackString<512> messages;
-#define APPEND_MESSAGE(msg)                                                                                            \
-  do                                                                                                                   \
-  {                                                                                                                    \
-    messages.append("\n        \u2022 ");                                                                              \
-    messages.append(msg);                                                                                              \
-  } while (0)
-#define APPEND_MESSAGE_FMT(...)                                                                                        \
-  do                                                                                                                   \
-  {                                                                                                                    \
-    messages.append("\n        \u2022 ");                                                                              \
-    messages.append_format(__VA_ARGS__);                                                                               \
-  } while (0)
+  LargeString messages;
+  const auto append_message = [&messages](std::string_view msg) {
+    messages.append(" \u2022 ");
+    messages.append(msg);
+    messages.append('\n');
+  };
+  const auto append_message_fmt = [&messages]<typename... T>(fmt::format_string<T...> fmt, T&&... args) {
+    messages.append(" \u2022 ");
+    messages.append_vformat(fmt, fmt::make_format_args(args...));
+    messages.append('\n');
+  };
 
   if (HasTrait(Trait::ForceInterpreter))
   {
     if (display_osd_messages && settings.cpu_execution_mode != CPUExecutionMode::Interpreter)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "CPU recompiler disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "CPU recompiler disabled."));
 
     settings.cpu_execution_mode = CPUExecutionMode::Interpreter;
   }
@@ -469,7 +539,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::ForceFullBoot))
   {
     if (display_osd_messages && settings.bios_patch_fast_boot)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Fast boot disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "Fast boot disabled."));
 
     settings.bios_patch_fast_boot = false;
   }
@@ -477,15 +547,23 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::DisableMultitap))
   {
     if (display_osd_messages && settings.multitap_mode != MultitapMode::Disabled)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Multitap disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "Multitap disabled."));
 
     settings.multitap_mode = MultitapMode::Disabled;
+  }
+
+  if (HasTrait(Trait::DisableFastForwardMemoryCardAccess) && g_settings.memory_card_fast_forward_access)
+  {
+    if (display_osd_messages)
+      append_message(TRANSLATE_SV("GameDatabase", "Fast forward memory card access disabled."));
+
+    settings.memory_card_fast_forward_access = false;
   }
 
   if (HasTrait(Trait::DisableCDROMReadSpeedup))
   {
     if (settings.cdrom_read_speedup != 1)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "CD-ROM read speedup disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "CD-ROM read speedup disabled."));
 
     settings.cdrom_read_speedup = 1;
   }
@@ -493,7 +571,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::DisableCDROMSeekSpeedup))
   {
     if (settings.cdrom_seek_speedup != 1)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "CD-ROM seek speedup disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "CD-ROM seek speedup disabled."));
 
     settings.cdrom_seek_speedup = 1;
   }
@@ -505,27 +583,39 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   }
   else if (settings.mdec_disable_cdrom_speedup && settings.cdrom_read_speedup != 1)
   {
-    Host::AddIconOSDWarning(
-      "GameDBDisableCDROMSpeedupUnnecessary", ICON_EMOJI_WARNING,
-      TRANSLATE_STR("GameDatabase", "Disable CD-ROM speedup on MDEC is enabled, but it is not required for this game."),
-      Host::OSD_WARNING_DURATION);
+    Host::AddIconOSDMessage(
+      OSDMessageType::Warning, "GameDBDisableCDROMSpeedupUnnecessary", ICON_EMOJI_WARNING,
+      TRANSLATE_STR("GameDatabase",
+                    "Disable CD-ROM speedup on MDEC is enabled, but it is not required for this game."));
   }
 
   if (display_crop_mode.has_value())
   {
     if (display_osd_messages && settings.display_crop_mode != display_crop_mode.value())
     {
-      APPEND_MESSAGE_FMT(TRANSLATE_FS("GameDatabase", "Display cropping set to {}."),
+      append_message_fmt(TRANSLATE_FS("GameDatabase", "Display cropping set to {}."),
                          Settings::GetDisplayCropModeDisplayName(display_crop_mode.value()));
     }
 
     settings.display_crop_mode = display_crop_mode.value();
   }
+  else if (HasTrait(Trait::DisableAllBordersCrop) && settings.display_crop_mode >= DisplayCropMode::Borders &&
+           settings.display_crop_mode <= DisplayCropMode::BordersUncorrected)
+  {
+    constexpr DisplayCropMode new_mode = DisplayCropMode::Overscan;
+    if (display_osd_messages)
+    {
+      append_message_fmt(TRANSLATE_FS("GameDatabase", "Display cropping set to {}."),
+                         Settings::GetDisplayCropModeDisplayName(new_mode));
+    }
+
+    settings.display_crop_mode = new_mode;
+  }
 
   if (HasTrait(Trait::ForceSoftwareRenderer))
   {
     if (display_osd_messages && settings.gpu_renderer != GPURenderer::Software)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Hardware rendering disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "Hardware rendering disabled."));
 
     settings.gpu_renderer = GPURenderer::Software;
   }
@@ -533,7 +623,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::ForceSoftwareRendererForReadbacks))
   {
     if (display_osd_messages && settings.gpu_renderer != GPURenderer::Software)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Software renderer readbacks enabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "Software renderer readbacks enabled."));
 
     settings.gpu_use_software_renderer_for_readbacks = true;
   }
@@ -552,7 +642,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
         DEFAULT_DEINTERLACING_MODE);
     if (display_osd_messages && settings.display_deinterlacing_mode != new_mode)
     {
-      APPEND_MESSAGE_FMT(TRANSLATE_FS("GameDatabase", "Deinterlacing set to {}."),
+      append_message_fmt(TRANSLATE_FS("GameDatabase", "Deinterlacing set to {}."),
                          Settings::GetDisplayDeinterlacingModeDisplayName(new_mode));
     }
 
@@ -565,7 +655,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     {
       if (display_osd_messages && settings.display_deinterlacing_mode != display_deinterlacing_mode.value())
       {
-        APPEND_MESSAGE_FMT(TRANSLATE_FS("GameDatabase", "Deinterlacing set to {}."),
+        append_message_fmt(TRANSLATE_FS("GameDatabase", "Deinterlacing set to {}."),
                            Settings::GetDisplayDeinterlacingModeDisplayName(display_deinterlacing_mode.value()));
       }
 
@@ -605,7 +695,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
 
     if (display_osd_messages && settings.gpu_dithering_mode != old_mode)
     {
-      APPEND_MESSAGE_FMT(TRANSLATE_FS("GameDatabase", "Dithering set to {}."),
+      append_message_fmt(TRANSLATE_FS("GameDatabase", "Dithering set to {}."),
                          Settings::GetGPUDitheringModeDisplayName(settings.gpu_dithering_mode));
     }
   }
@@ -615,9 +705,9 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages)
     {
       if (settings.gpu_resolution_scale != 1)
-        APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Upscaling disabled."));
+        append_message(TRANSLATE_SV("GameDatabase", "Upscaling disabled."));
       if (settings.gpu_multisamples != 1)
-        APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "MSAA disabled."));
+        append_message(TRANSLATE_SV("GameDatabase", "MSAA disabled."));
     }
 
     settings.gpu_resolution_scale = 1;
@@ -630,7 +720,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && (settings.gpu_texture_filter != GPUTextureFilter::Nearest ||
                                  g_settings.gpu_sprite_texture_filter != GPUTextureFilter::Nearest))
     {
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Texture filtering disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "Texture filtering disabled."));
     }
 
     settings.gpu_texture_filter = GPUTextureFilter::Nearest;
@@ -641,7 +731,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   {
     if (display_osd_messages && g_settings.gpu_sprite_texture_filter != GPUTextureFilter::Nearest)
     {
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Sprite texture filtering disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "Sprite texture filtering disabled."));
     }
 
     settings.gpu_sprite_texture_filter = GPUTextureFilter::Nearest;
@@ -652,7 +742,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_scaled_interlacing &&
         settings.display_deinterlacing_mode != DisplayDeinterlacingMode::Progressive)
     {
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Scaled interlacing disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "Scaled interlacing disabled."));
     }
 
     settings.gpu_scaled_interlacing = false;
@@ -660,16 +750,17 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
 
   if (HasTrait(Trait::DisableWidescreen))
   {
-    if (display_osd_messages && settings.gpu_widescreen_hack)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "Widescreen rendering disabled."));
+    if (display_osd_messages && settings.gpu_widescreen_rendering)
+      append_message(TRANSLATE_SV("GameDatabase", "Widescreen rendering disabled."));
 
+    settings.gpu_widescreen_rendering = false;
     settings.gpu_widescreen_hack = false;
   }
 
   if (HasTrait(Trait::DisablePGXP))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP geometry correction disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "PGXP geometry correction disabled."));
 
     settings.gpu_pgxp_enable = false;
   }
@@ -677,7 +768,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::DisablePGXPCulling))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable && settings.gpu_pgxp_culling)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP culling correction disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "PGXP culling correction disabled."));
 
     settings.gpu_pgxp_culling = false;
   }
@@ -685,7 +776,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::DisablePGXPTextureCorrection))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable && settings.gpu_pgxp_texture_correction)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP perspective correct textures disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "PGXP perspective correct textures disabled."));
 
     settings.gpu_pgxp_texture_correction = false;
   }
@@ -695,7 +786,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_pgxp_enable && settings.gpu_pgxp_texture_correction &&
         settings.gpu_pgxp_color_correction)
     {
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP perspective correct colors disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "PGXP perspective correct colors disabled."));
     }
 
     settings.gpu_pgxp_color_correction = false;
@@ -704,18 +795,17 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::ForcePGXPVertexCache))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable && !settings.gpu_pgxp_vertex_cache)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP vertex cache enabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "PGXP vertex cache enabled."));
 
     settings.gpu_pgxp_vertex_cache = settings.gpu_pgxp_enable;
   }
   else if (settings.gpu_pgxp_enable && settings.gpu_pgxp_vertex_cache)
   {
-    Host::AddIconOSDWarning(
-      "gamedb_force_pgxp_vertex_cache", ICON_EMOJI_WARNING,
+    Host::AddIconOSDMessage(
+      OSDMessageType::Warning, "gamedb_force_pgxp_vertex_cache", ICON_EMOJI_WARNING,
       TRANSLATE_STR(
         "GameDatabase",
-        "PGXP Vertex Cache is enabled, but it is not required for this game. This may cause rendering errors."),
-      Host::OSD_WARNING_DURATION);
+        "PGXP Vertex Cache is enabled, but it is not required for this game. This may cause rendering errors."));
   }
 
   if (HasTrait(Trait::ForcePGXPCPUMode))
@@ -723,12 +813,11 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_pgxp_enable && !settings.gpu_pgxp_cpu)
     {
 #ifndef __ANDROID__
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP CPU mode enabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "PGXP CPU mode enabled."));
 #else
-      Host::AddIconOSDWarning("gamedb_force_pgxp_cpu", ICON_EMOJI_WARNING,
-                              "This game requires PGXP CPU mode, which increases system requirements.\n"
-                              "       If the game runs too slow, disable PGXP for this game.",
-                              Host::OSD_WARNING_DURATION);
+      Host::AddIconOSDMessage(OSDMessageType::Warning, "gamedb_force_pgxp_cpu", ICON_EMOJI_WARNING,
+                              "This game requires PGXP CPU mode, which increases system requirements."
+                              "If the game runs too slow, disable PGXP for this game.");
 #endif
     }
 
@@ -736,17 +825,17 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   }
   else if (settings.UsingPGXPCPUMode())
   {
-    Host::AddIconOSDWarning(
-      "gamedb_force_pgxp_cpu", ICON_EMOJI_WARNING,
-      TRANSLATE_STR("GameDatabase",
-                    "PGXP CPU mode is enabled, but it is not required for this game. This may cause rendering errors."),
-      Host::OSD_WARNING_DURATION);
+    Host::AddIconOSDMessage(
+      OSDMessageType::Warning, "gamedb_force_pgxp_cpu", ICON_EMOJI_WARNING,
+      TRANSLATE_STR(
+        "GameDatabase",
+        "PGXP CPU mode is enabled, but it is not required for this game. This may cause rendering errors."));
   }
 
   if (HasTrait(Trait::DisablePGXPDepthBuffer))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable && settings.gpu_pgxp_depth_buffer)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP depth buffer disabled."));
+      append_message(TRANSLATE_SV("GameDatabase", "PGXP depth buffer disabled."));
 
     settings.gpu_pgxp_depth_buffer = false;
   }
@@ -754,7 +843,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   if (HasTrait(Trait::DisablePGXPOn2DPolygons))
   {
     if (display_osd_messages && settings.gpu_pgxp_enable && !settings.gpu_pgxp_disable_2d)
-      APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP disabled on 2D polygons."));
+      append_message(TRANSLATE_SV("GameDatabase", "PGXP disabled on 2D polygons."));
 
     g_settings.gpu_pgxp_disable_2d = true;
   }
@@ -767,7 +856,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
                gpu_pgxp_preserve_proj_fp.value() ? "true" : "false");
 
       if (settings.gpu_pgxp_enable && settings.gpu_pgxp_preserve_proj_fp && !gpu_pgxp_preserve_proj_fp.value())
-        APPEND_MESSAGE(TRANSLATE_SV("GameDatabase", "PGXP preserve projection precision disabled."));
+        append_message(TRANSLATE_SV("GameDatabase", "PGXP preserve projection precision disabled."));
     }
 
     settings.gpu_pgxp_preserve_proj_fp = gpu_pgxp_preserve_proj_fp.value();
@@ -787,15 +876,13 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
 
   if (!messages.empty())
   {
-    Host::AddIconOSDMessage(
-      "GameDBCompatibility", ICON_EMOJI_INFORMATION,
-      fmt::format("{}{}", TRANSLATE_SV("GameDatabase", "Compatibility settings for this game have been applied."),
-                  messages.view()),
-      Host::OSD_INFO_DURATION);
-  }
+    if (messages.back() == '\n')
+      messages.pop_back();
 
-#undef APPEND_MESSAGE_FMT
-#undef APPEND_MESSAGE
+    Host::AddIconOSDMessage(OSDMessageType::Info, "GameDBCompatibility", ICON_EMOJI_INFORMATION,
+                            TRANSLATE_STR("GameDatabase", "Compatibility settings for this game have been applied."),
+                            std::string(messages.view()));
+  }
 
 #define BIT_FOR(ctype) (static_cast<u16>(1) << static_cast<u32>(ctype))
 
@@ -819,37 +906,33 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
 
       if (display_osd_messages)
       {
-        SmallString supported_controller_string;
+        SmallString supported_controller_string(
+          TRANSLATE_SV("GameDatabase", "Please configure a supported controller from the following list:"));
+
         for (u32 j = 0; j < static_cast<u32>(ControllerType::Count); j++)
         {
           const ControllerType supported_ctype = static_cast<ControllerType>(j);
           if ((supported_controllers & BIT_FOR(supported_ctype)) == 0)
             continue;
 
-          if (!supported_controller_string.empty())
-            supported_controller_string.append(", ");
-
-          supported_controller_string.append(Controller::GetControllerInfo(supported_ctype).GetDisplayName());
+          supported_controller_string.append_format("\n \u2022 {}",
+                                                    Controller::GetControllerInfo(supported_ctype).GetDisplayName());
         }
 
-        Host::AddIconOSDWarning(
-          fmt::format("GameDBController{}Unsupported", i), ICON_EMOJI_WARNING,
-          fmt::format(
-            TRANSLATE_FS("GameDatabase",
-                         "Controller in Port {0} ({1}) is not supported for this game.\nSupported controllers: "
-                         "{2}\nPlease configure a supported controller from the list above."),
-            i + 1u, Controller::GetControllerInfo(ctype).GetDisplayName(), supported_controller_string),
-          Host::OSD_CRITICAL_ERROR_DURATION);
+        Host::AddIconOSDMessage(
+          OSDMessageType::Error, fmt::format("GameDBController{}Unsupported", i), ICON_EMOJI_WARNING,
+          fmt::format(TRANSLATE_FS("GameDatabase", "Controller in Port {0} ({1}) is not supported for this game."),
+                      i + 1u, Controller::GetControllerInfo(ctype).GetDisplayName()),
+          std::string(supported_controller_string));
       }
     }
 
     if (g_settings.multitap_mode != MultitapMode::Disabled && !(supported_controllers & SUPPORTS_MULTITAP_BIT))
     {
-      Host::AddIconOSDMessage("GameDBMultitapUnsupported", ICON_EMOJI_WARNING,
-                              TRANSLATE_STR("GameDatabase",
-                                            "This game does not support multitap, but multitap is enabled.\n"
-                                            "       This may result in dropped controller inputs."),
-                              Host::OSD_CRITICAL_ERROR_DURATION);
+      Host::AddIconOSDMessage(
+        OSDMessageType::Error, "GameDBMultitapUnsupported", ICON_EMOJI_WARNING,
+        TRANSLATE_STR("GameDatabase", "This game does not support multitap, but multitap is enabled."),
+        TRANSLATE_STR("GameDatabase", "This may result in dropped controller inputs."));
     }
   }
 
@@ -910,8 +993,14 @@ static inline void AppendEnumSetting(SmallStringBase& str, bool& heading, std::s
 std::string GameDatabase::Entry::GenerateCompatibilityReport() const
 {
   LargeString ret;
-  ret.append_format("**{}:** {}\n\n", TRANSLATE_SV("GameDatabase", "Title"), title);
   ret.append_format("**{}:** {}\n\n", TRANSLATE_SV("GameDatabase", "Serial"), serial);
+  ret.append_format("**{}:** {}\n\n", TRANSLATE_SV("GameDatabase", "Title"), title);
+  if (!sort_title.empty())
+    ret.append_format("**{}:** {}\n\n", TRANSLATE_SV("GameDatabase", "Sort Title"), sort_title);
+  if (!localized_title.empty())
+    ret.append_format("**{}:** {}\n\n", TRANSLATE_SV("GameDatabase", "Localized Title"), localized_title);
+  if (!save_title.empty())
+    ret.append_format("**{}:** {}\n\n", TRANSLATE_SV("GameDatabase", "Save Title"), save_title);
 
   if (languages.any())
     ret.append_format("**{}:** {}\n\n", TRANSLATE_SV("GameDatabase", "Languages"), GetLanguagesString());
@@ -967,6 +1056,7 @@ std::string GameDatabase::Entry::GenerateCompatibilityReport() const
                     &Settings::GetDisplayCropModeDisplayName, display_crop_mode);
   AppendEnumSetting(ret, settings_heading, TRANSLATE_SV("GameDatabase", "Display Deinterlacing Mode"),
                     &Settings::GetDisplayDeinterlacingModeDisplayName, display_deinterlacing_mode);
+  AppendIntegerSetting(ret, settings_heading, TRANSLATE_SV("GameDatabase", "CPU Overclock Percent"), cpu_overclock);
   AppendIntegerSetting(ret, settings_heading, TRANSLATE_SV("GameDatabase", "DMA Max Slice Ticks"), dma_max_slice_ticks);
   AppendIntegerSetting(ret, settings_heading, TRANSLATE_SV("GameDatabase", "DMA Halt Ticks"), dma_halt_ticks);
   AppendIntegerSetting(ret, settings_heading, TRANSLATE_SV("GameDatabase", "CD-ROM Max Seek Speedup Cycles"),
@@ -986,10 +1076,10 @@ std::string GameDatabase::Entry::GenerateCompatibilityReport() const
   if (settings_heading)
     ret.append("\n");
 
-  if (!disc_set_name.empty())
+  if (disc_set)
   {
-    ret.append_format("**{}:** {}\n", TRANSLATE_SV("GameDatabase", "Disc Set"), disc_set_name);
-    for (const std::string_view& ds_serial : disc_set_serials)
+    ret.append_format("**{}:** {}\n", TRANSLATE_SV("GameDatabase", "Disc Set"), disc_set->GetDisplayTitle(true));
+    for (const std::string_view& ds_serial : disc_set->serials)
       ret.append_format(" - {}\n", ds_serial);
   }
 
@@ -1012,45 +1102,76 @@ bool GameDatabase::LoadFromCache()
   }
 
   BinarySpanReader reader(db_data->cspan());
-  const u64 gamedb_ts = Host::GetResourceFileTimestamp("gamedb.yaml", false).value_or(0);
+  const u64 gamedb_ts = static_cast<u64>(Host::GetResourceFileTimestamp(GAMEDB_YAML_FILENAME, false).value_or(0));
+  const u64 discsets_ts = static_cast<u64>(Host::GetResourceFileTimestamp(DISCSETS_YAML_FILENAME, false).value_or(0));
 
-  u32 signature, version, num_entries, num_codes;
-  u64 file_gamedb_ts;
+  u32 signature, version, num_disc_set_entries, num_entries, num_codes;
+  u64 file_gamedb_ts, file_discsets_ts;
   if (!reader.ReadU32(&signature) || !reader.ReadU32(&version) || !reader.ReadU64(&file_gamedb_ts) ||
-      !reader.ReadU32(&num_entries) || !reader.ReadU32(&num_codes) || signature != GAME_DATABASE_CACHE_SIGNATURE ||
+      !reader.ReadU64(&file_discsets_ts) || !reader.ReadU32(&num_disc_set_entries) || !reader.ReadU32(&num_entries) ||
+      !reader.ReadU32(&num_codes) || signature != GAME_DATABASE_CACHE_SIGNATURE ||
       version != GAME_DATABASE_CACHE_VERSION)
   {
     DEV_LOG("Cache header is corrupted or version mismatch.");
     return false;
   }
 
-  if (gamedb_ts != file_gamedb_ts)
+  if (gamedb_ts != file_gamedb_ts || discsets_ts != file_discsets_ts)
   {
     DEV_LOG("Cache is out of date, recreating.");
     return false;
   }
 
-  s_entries.reserve(num_entries);
+  s_state.entries.reserve(num_entries);
+  s_state.disc_sets.reserve(num_disc_set_entries);
+
+  for (u32 i = 0; i < num_disc_set_entries; i++)
+  {
+    DiscSetEntry& disc_set = s_state.disc_sets.emplace_back();
+    u32 num_serials;
+    if (!reader.ReadSizePrefixedString(&disc_set.title) || !reader.ReadSizePrefixedString(&disc_set.sort_title) ||
+        !reader.ReadSizePrefixedString(&disc_set.localized_title) ||
+        !reader.ReadSizePrefixedString(&disc_set.save_title) || !reader.ReadU32(&num_serials))
+    {
+      DEV_LOG("Cache disc set entry is corrupted.");
+      return false;
+    }
+    if (num_serials > 0)
+    {
+      disc_set.serials.reserve(num_serials);
+      for (u32 j = 0; j < num_serials; j++)
+      {
+        if (!reader.ReadSizePrefixedString(&disc_set.serials.emplace_back()))
+        {
+          DEV_LOG("Cache disc set entry is corrupted.");
+          return false;
+        }
+      }
+    }
+  }
 
   for (u32 i = 0; i < num_entries; i++)
   {
-    Entry& entry = s_entries.emplace_back();
+    Entry& entry = s_state.entries.emplace_back();
 
     constexpr u32 trait_num_bytes = (static_cast<u32>(Trait::MaxCount) + 7) / 8;
     constexpr u32 language_num_bytes = (static_cast<u32>(Language::MaxCount) + 7) / 8;
     std::array<u8, trait_num_bytes> trait_bits;
     std::array<u8, language_num_bytes> language_bits;
     u8 compatibility;
-    u32 num_disc_set_serials;
+    s32 disc_set_index;
 
     if (!reader.ReadSizePrefixedString(&entry.serial) || !reader.ReadSizePrefixedString(&entry.title) ||
-        !reader.ReadSizePrefixedString(&entry.genre) || !reader.ReadSizePrefixedString(&entry.developer) ||
-        !reader.ReadSizePrefixedString(&entry.publisher) ||
+        !reader.ReadSizePrefixedString(&entry.sort_title) || !reader.ReadSizePrefixedString(&entry.localized_title) ||
+        !reader.ReadSizePrefixedString(&entry.save_title) || !reader.ReadSizePrefixedString(&entry.genre) ||
+        !reader.ReadSizePrefixedString(&entry.developer) || !reader.ReadSizePrefixedString(&entry.publisher) ||
         !reader.ReadSizePrefixedString(&entry.compatibility_version_tested) ||
-        !reader.ReadSizePrefixedString(&entry.compatibility_comments) || !reader.ReadU64(&entry.release_date) ||
-        !reader.ReadU8(&entry.min_players) || !reader.ReadU8(&entry.max_players) || !reader.ReadU8(&entry.min_blocks) ||
-        !reader.ReadU8(&entry.max_blocks) || !reader.ReadU16(&entry.supported_controllers) ||
-        !reader.ReadU8(&compatibility) || compatibility >= static_cast<u8>(GameDatabase::CompatibilityRating::Count) ||
+        !reader.ReadSizePrefixedString(&entry.compatibility_comments) || !reader.ReadS32(&disc_set_index) ||
+        (disc_set_index >= 0 && static_cast<u32>(disc_set_index) >= num_disc_set_entries) ||
+        !reader.ReadU64(&entry.release_date) || !reader.ReadU8(&entry.min_players) ||
+        !reader.ReadU8(&entry.max_players) || !reader.ReadU8(&entry.min_blocks) || !reader.ReadU8(&entry.max_blocks) ||
+        !reader.ReadU16(&entry.supported_controllers) || !reader.ReadU8(&compatibility) ||
+        compatibility >= static_cast<u8>(GameDatabase::CompatibilityRating::Count) ||
         !reader.Read(trait_bits.data(), trait_num_bytes) || !reader.Read(language_bits.data(), language_num_bytes) ||
         !reader.ReadOptionalT(&entry.display_active_start_offset) ||
         !reader.ReadOptionalT(&entry.display_active_end_offset) ||
@@ -1062,25 +1183,13 @@ bool GameDatabase::LoadFromCache()
         !reader.ReadOptionalT(&entry.gpu_max_run_ahead) || !reader.ReadOptionalT(&entry.gpu_pgxp_tolerance) ||
         !reader.ReadOptionalT(&entry.gpu_pgxp_depth_threshold) ||
         !reader.ReadOptionalT(&entry.gpu_pgxp_preserve_proj_fp) || !reader.ReadOptionalT(&entry.gpu_line_detect_mode) ||
-        !reader.ReadSizePrefixedString(&entry.disc_set_name) || !reader.ReadU32(&num_disc_set_serials))
+        !reader.ReadOptionalT(&entry.cpu_overclock))
     {
       DEV_LOG("Cache entry is corrupted.");
       return false;
     }
 
-    if (num_disc_set_serials > 0)
-    {
-      entry.disc_set_serials.reserve(num_disc_set_serials);
-      for (u32 j = 0; j < num_disc_set_serials; j++)
-      {
-        if (!reader.ReadSizePrefixedString(&entry.disc_set_serials.emplace_back()))
-        {
-          DEV_LOG("Cache entry is corrupted.");
-          return false;
-        }
-      }
-    }
-
+    entry.disc_set = (disc_set_index >= 0) ? &s_state.disc_sets[static_cast<u32>(disc_set_index)] : nullptr;
     entry.compatibility = static_cast<GameDatabase::CompatibilityRating>(compatibility);
     entry.traits.reset();
     for (size_t j = 0; j < static_cast<size_t>(Trait::MaxCount); j++)
@@ -1099,22 +1208,24 @@ bool GameDatabase::LoadFromCache()
   {
     std::string code;
     u32 index;
-    if (!reader.ReadSizePrefixedString(&code) || !reader.ReadU32(&index) || index >= static_cast<u32>(s_entries.size()))
+    if (!reader.ReadSizePrefixedString(&code) || !reader.ReadU32(&index) ||
+        index >= static_cast<u32>(s_state.entries.size()))
     {
       DEV_LOG("Cache code entry is corrupted.");
       return false;
     }
 
-    s_code_lookup.emplace(std::move(code), index);
+    s_state.code_lookup.emplace(std::move(code), index);
   }
 
-  s_db_data = std::move(db_data.value());
+  s_state.db_data = std::move(db_data.value());
   return true;
 }
 
 bool GameDatabase::SaveToCache()
 {
-  const u64 gamedb_ts = Host::GetResourceFileTimestamp("gamedb.yaml", false).value_or(0);
+  const u64 gamedb_ts = static_cast<u64>(Host::GetResourceFileTimestamp(GAMEDB_YAML_FILENAME, false).value_or(0));
+  const u64 discsets_ts = static_cast<u64>(Host::GetResourceFileTimestamp(DISCSETS_YAML_FILENAME, false).value_or(0));
 
   Error error;
   FileSystem::AtomicRenamedFile file = FileSystem::CreateAtomicRenamedFile(GetCacheFile(), &error);
@@ -1127,20 +1238,37 @@ bool GameDatabase::SaveToCache()
   BinaryFileWriter writer(file.get());
   writer.WriteU32(GAME_DATABASE_CACHE_SIGNATURE);
   writer.WriteU32(GAME_DATABASE_CACHE_VERSION);
-  writer.WriteU64(static_cast<u64>(gamedb_ts));
+  writer.WriteU64(gamedb_ts);
+  writer.WriteU64(discsets_ts);
 
-  writer.WriteU32(static_cast<u32>(s_entries.size()));
-  writer.WriteU32(static_cast<u32>(s_code_lookup.size()));
+  writer.WriteU32(static_cast<u32>(s_state.disc_sets.size()));
+  writer.WriteU32(static_cast<u32>(s_state.entries.size()));
+  writer.WriteU32(static_cast<u32>(s_state.code_lookup.size()));
 
-  for (const Entry& entry : s_entries)
+  for (const DiscSetEntry& disc_set : s_state.disc_sets)
+  {
+    writer.WriteSizePrefixedString(disc_set.title);
+    writer.WriteSizePrefixedString(disc_set.sort_title);
+    writer.WriteSizePrefixedString(disc_set.localized_title);
+    writer.WriteSizePrefixedString(disc_set.save_title);
+    writer.WriteU32(static_cast<u32>(disc_set.serials.size()));
+    for (const std::string_view& ds_serial : disc_set.serials)
+      writer.WriteSizePrefixedString(ds_serial);
+  }
+
+  for (const Entry& entry : s_state.entries)
   {
     writer.WriteSizePrefixedString(entry.serial);
     writer.WriteSizePrefixedString(entry.title);
+    writer.WriteSizePrefixedString(entry.sort_title);
+    writer.WriteSizePrefixedString(entry.localized_title);
+    writer.WriteSizePrefixedString(entry.save_title);
     writer.WriteSizePrefixedString(entry.genre);
     writer.WriteSizePrefixedString(entry.developer);
     writer.WriteSizePrefixedString(entry.publisher);
     writer.WriteSizePrefixedString(entry.compatibility_version_tested);
     writer.WriteSizePrefixedString(entry.compatibility_comments);
+    writer.WriteS32(entry.disc_set ? static_cast<s32>(entry.disc_set - &s_state.disc_sets[0]) : -1);
     writer.WriteU64(entry.release_date);
     writer.WriteU8(entry.min_players);
     writer.WriteU8(entry.max_players);
@@ -1184,14 +1312,10 @@ bool GameDatabase::SaveToCache()
     writer.WriteOptionalT(entry.gpu_pgxp_depth_threshold);
     writer.WriteOptionalT(entry.gpu_pgxp_preserve_proj_fp);
     writer.WriteOptionalT(entry.gpu_line_detect_mode);
-
-    writer.WriteSizePrefixedString(entry.disc_set_name);
-    writer.WriteU32(static_cast<u32>(entry.disc_set_serials.size()));
-    for (const std::string_view& serial : entry.disc_set_serials)
-      writer.WriteSizePrefixedString(serial);
+    writer.WriteOptionalT(entry.cpu_overclock);
   }
 
-  for (const auto& it : s_code_lookup)
+  for (const auto& it : s_state.code_lookup)
   {
     writer.WriteSizePrefixedString(it.first);
     writer.WriteU32(it.second);
@@ -1210,68 +1334,99 @@ bool GameDatabase::LoadGameDBYaml()
     return false;
   }
 
-  const ryml::Tree tree = ryml::parse_in_place(
-    to_csubstr(GAMEDB_YAML_FILENAME), c4::substr(reinterpret_cast<char*>(gamedb_data->data()), gamedb_data->size()));
-  const ryml::ConstNodeRef root = tree.rootref();
-  s_entries.reserve(root.num_children());
+  std::optional<DynamicHeapArray<u8>> disc_set_data = Host::ReadResourceFile(DISCSETS_YAML_FILENAME, false, &error);
+  if (!disc_set_data.has_value())
+  {
+    ERROR_LOG("Failed to read disc set database: {}", error.GetDescription());
+    return false;
+  }
 
   PreferUnorderedStringMap<std::string_view> code_lookup;
-
-  for (const ryml::ConstNodeRef& current : root.cchildren())
   {
-    const std::string_view serial = to_stringview(current.key());
-    if (current.empty())
-    {
-      ERROR_LOG("Missing serial for entry.");
-      return false;
-    }
+    const ryml::Tree tree = ryml::parse_in_place(
+      to_csubstr(GAMEDB_YAML_FILENAME), c4::substr(reinterpret_cast<char*>(gamedb_data->data()), gamedb_data->size()));
+    const ryml::ConstNodeRef root = tree.rootref();
+    s_state.entries.reserve(root.num_children());
 
-    Entry& entry = s_entries.emplace_back();
-    entry.serial = serial;
-    if (!ParseYamlEntry(&entry, current))
+    for (const ryml::ConstNodeRef& current : root.cchildren())
     {
-      s_entries.pop_back();
-      continue;
-    }
+      const std::string_view serial = to_stringview(current.key());
+      if (current.empty())
+      {
+        ERROR_LOG("Missing serial for entry.");
+        return false;
+      }
 
-    ParseYamlCodes(code_lookup, current, serial);
+      Entry& entry = s_state.entries.emplace_back();
+      entry.serial = serial;
+      if (!ParseYamlEntry(&entry, current))
+      {
+        s_state.entries.pop_back();
+        continue;
+      }
+
+      ParseYamlCodes(code_lookup, current, serial);
+    }
   }
 
   // Sorting must be done before generating code lookup, because otherwise the indices won't match.
-  s_entries.shrink_to_fit();
-  std::sort(s_entries.begin(), s_entries.end(),
+  s_state.entries.shrink_to_fit();
+  std::sort(s_state.entries.begin(), s_state.entries.end(),
             [](const Entry& lhs, const Entry& rhs) { return (lhs.serial < rhs.serial); });
-
-  ryml::reset_callbacks();
 
   for (const auto& [code, serial] : code_lookup)
   {
     const auto it =
-      std::lower_bound(s_entries.cbegin(), s_entries.cend(), serial,
+      std::lower_bound(s_state.entries.cbegin(), s_state.entries.cend(), serial,
                        [](const Entry& entry, const std::string_view& search) { return (entry.serial < search); });
-    if (it == s_entries.end() || it->serial != serial)
+    if (it == s_state.entries.end() || it->serial != serial)
     {
       ERROR_LOG("Somehow we messed up our code lookup for {} and {}?!", code, serial);
       continue;
     }
 
-    if (!s_code_lookup.emplace(code, static_cast<u32>(std::distance(s_entries.cbegin(), it))).second)
+    if (!s_state.code_lookup.emplace(code, static_cast<u32>(std::distance(s_state.entries.cbegin(), it))).second)
       ERROR_LOG("Failed to insert code {}", code);
   }
 
-  if (s_entries.empty())
+  if (s_state.entries.empty())
   {
     ERROR_LOG("Game database is empty.");
     return false;
   }
 
-  s_db_data = std::move(gamedb_data.value());
+  // parse disc sets
+  {
+    const ryml::Tree tree =
+      ryml::parse_in_place(to_csubstr(DISCSETS_YAML_FILENAME),
+                           c4::substr(reinterpret_cast<char*>(disc_set_data->data()), disc_set_data->size()));
+    const ryml::ConstNodeRef root = tree.rootref();
+    s_state.disc_sets.reserve(root.num_children());
+    for (const ryml::ConstNodeRef& current : root.cchildren())
+    {
+      DiscSetEntry& disc_set = s_state.disc_sets.emplace_back();
+      if (!ParseYamlDiscSetEntry(&disc_set, current))
+      {
+        s_state.disc_sets.pop_back();
+        continue;
+      }
+    }
+
+    s_state.disc_sets.shrink_to_fit();
+    BindDiscSetsToEntries();
+  }
+
+  s_state.db_data = std::move(gamedb_data.value());
+  s_state.disc_set_db_data = std::move(disc_set_data.value());
   return true;
 }
 
 bool GameDatabase::ParseYamlEntry(Entry* entry, const ryml::ConstNodeRef& value)
 {
   GetStringFromObject(value, "name", &entry->title);
+  GetStringFromObject(value, "sortName", &entry->sort_title);
+  GetStringFromObject(value, "localizedName", &entry->localized_title);
+  GetStringFromObject(value, "saveName", &entry->save_title);
 
   entry->supported_controllers = static_cast<u16>(~0u);
 
@@ -1447,38 +1602,97 @@ bool GameDatabase::ParseYamlEntry(Entry* entry, const ryml::ConstNodeRef& value)
     entry->gpu_pgxp_preserve_proj_fp = GetOptionalTFromObject<bool>(settings, "gpuPGXPPreserveProjFP");
     entry->gpu_line_detect_mode =
       ParseOptionalTFromObject<GPULineDetectMode>(settings, "gpuLineDetectMode", &Settings::ParseLineDetectModeName);
-  }
-
-  if (const ryml::ConstNodeRef disc_set = value.find_child("discSet"); disc_set.valid() && disc_set.has_children())
-  {
-    GetStringFromObject(disc_set, "name", &entry->disc_set_name);
-
-    if (const ryml::ConstNodeRef set_serials = disc_set.find_child("serials");
-        set_serials.valid() && set_serials.has_children())
-    {
-      entry->disc_set_serials.reserve(set_serials.num_children());
-      for (const ryml::ConstNodeRef& serial : set_serials)
-      {
-        const std::string_view serial_str = to_stringview(serial.val());
-        if (serial_str.empty())
-        {
-          WARNING_LOG("Empty disc set serial in {}", entry->serial);
-          continue;
-        }
-
-        if (std::find(entry->disc_set_serials.begin(), entry->disc_set_serials.end(), serial_str) !=
-            entry->disc_set_serials.end())
-        {
-          WARNING_LOG("Duplicate serial {} in disc set serials for {}", serial_str, entry->serial);
-          continue;
-        }
-
-        entry->disc_set_serials.emplace_back(serial_str);
-      }
-    }
+    entry->cpu_overclock = GetOptionalTFromObject<u8>(settings, "cpuOverclockPercent");
   }
 
   return true;
+}
+
+bool GameDatabase::ParseYamlDiscSetEntry(DiscSetEntry* entry, const ryml::ConstNodeRef& value)
+{
+  if (!GetStringFromObject(value, "name", &entry->title) || entry->title.empty())
+  {
+    WARNING_LOG("Disc set entry is missing a title.");
+    return false;
+  }
+
+  GetStringFromObject(value, "sortName", &entry->sort_title);
+  GetStringFromObject(value, "localizedName", &entry->localized_title);
+  GetStringFromObject(value, "saveName", &entry->save_title);
+
+  // ensure there are no duplicates, linear search is okay here because there aren't that many disc sets
+  const std::string_view save_title = entry->GetSaveTitle();
+  const size_t search_count = s_state.disc_sets.size() - 1;
+  for (size_t i = 0; i < search_count; i++)
+  {
+    if (s_state.disc_sets[i].GetSaveTitle() == save_title)
+    {
+      WARNING_LOG("Duplicate disc set title {}.", save_title);
+      return false;
+    }
+  }
+
+  if (const ryml::ConstNodeRef set_serials = value.find_child("serials");
+      set_serials.valid() && set_serials.has_children())
+  {
+    entry->serials.reserve(set_serials.num_children());
+    for (const ryml::ConstNodeRef& serial : set_serials)
+    {
+      const std::string_view serial_str = to_stringview(serial.val());
+      if (serial_str.empty())
+      {
+        WARNING_LOG("Empty disc set serial in {}", entry->title);
+        continue;
+      }
+
+      if (std::find(entry->serials.begin(), entry->serials.end(), serial_str) != entry->serials.end())
+      {
+        WARNING_LOG("Duplicate serial {} in disc set serials for {}", serial_str, entry->title);
+        continue;
+      }
+
+      const auto entry_it =
+        std::lower_bound(s_state.entries.begin(), s_state.entries.end(), serial_str,
+                         [](const Entry& entry, const std::string_view& search) { return (entry.serial < search); });
+      if (entry_it == s_state.entries.end() || entry_it->serial != serial_str)
+      {
+        WARNING_LOG("Serial {} in disc set {} does not exist in game database.", serial_str, entry->title);
+        continue;
+      }
+      else if (entry_it->disc_set)
+      {
+        WARNING_LOG("Serial {} in disc set {} is already part of another disc set.", serial_str, entry->title);
+        continue;
+      }
+
+      entry->serials.emplace_back(serial_str);
+    }
+  }
+
+  if (entry->serials.empty())
+  {
+    WARNING_LOG("Disc set {} has {} serials, dropping.", entry->title, entry->serials.size());
+    return false;
+  }
+
+  return true;
+}
+
+void GameDatabase::BindDiscSetsToEntries()
+{
+  for (DiscSetEntry& dsentry : s_state.disc_sets)
+  {
+    for (const std::string_view& serial : dsentry.serials)
+    {
+      const auto entry_it =
+        std::lower_bound(s_state.entries.begin(), s_state.entries.end(), serial,
+                         [](const Entry& entry, const std::string_view& search) { return (entry.serial < search); });
+      Assert(entry_it != s_state.entries.end() && entry_it->serial == serial);
+
+      // link the entry to this disc set
+      entry_it->disc_set = &dsentry;
+    }
+  }
 }
 
 bool GameDatabase::ParseYamlCodes(PreferUnorderedStringMap<std::string_view>& lookup, const ryml::ConstNodeRef& value,
@@ -1525,10 +1739,10 @@ bool GameDatabase::ParseYamlCodes(PreferUnorderedStringMap<std::string_view>& lo
 
 void GameDatabase::EnsureTrackHashesMapLoaded()
 {
-  if (s_track_hashes_loaded)
+  if (s_state.track_hashes_loaded)
     return;
 
-  s_track_hashes_loaded = true;
+  s_state.track_hashes_loaded = true;
   LoadTrackHashes();
 }
 
@@ -1548,7 +1762,7 @@ bool GameDatabase::LoadTrackHashes()
   const ryml::Tree tree = ryml::parse_in_arena(to_csubstr(DISCDB_YAML_FILENAME), to_csubstr(gamedb_data.value()));
   const ryml::ConstNodeRef root = tree.rootref();
 
-  s_track_hashes_map = {};
+  s_state.track_hashes_map = {};
 
   size_t serials = 0;
   for (const ryml::ConstNodeRef& current : root.cchildren())
@@ -1593,8 +1807,8 @@ bool GameDatabase::LoadTrackHashes()
         const std::optional<CDImageHasher::Hash> md5o = CDImageHasher::HashFromString(md5_str);
         if (md5o.has_value())
         {
-          s_track_hashes_map.emplace(std::piecewise_construct, std::forward_as_tuple(md5o.value()),
-                                     std::forward_as_tuple(std::string(serial), revision_string, revision));
+          s_state.track_hashes_map.emplace(std::piecewise_construct, std::forward_as_tuple(md5o.value()),
+                                           std::forward_as_tuple(std::string(serial), revision_string, revision));
         }
         else
         {
@@ -1608,13 +1822,13 @@ bool GameDatabase::LoadTrackHashes()
   }
 
   ryml::reset_callbacks();
-  INFO_LOG("Loaded {} track hashes from {} serials in {:.0f}ms.", s_track_hashes_map.size(), serials,
+  INFO_LOG("Loaded {} track hashes from {} serials in {:.0f}ms.", s_state.track_hashes_map.size(), serials,
            load_timer.GetTimeMilliseconds());
-  return !s_track_hashes_map.empty();
+  return !s_state.track_hashes_map.empty();
 }
 
 const GameDatabase::TrackHashesMap& GameDatabase::GetTrackHashesMap()
 {
   EnsureTrackHashesMapLoaded();
-  return s_track_hashes_map;
+  return s_state.track_hashes_map;
 }

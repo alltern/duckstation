@@ -8,8 +8,6 @@
 #include "core/memory_scanner.h"
 
 #include <QtCore/QTimer>
-#include <QtWidgets/QComboBox>
-#include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QWidget>
@@ -27,9 +25,15 @@ Q_SIGNALS:
   void closed();
 
 protected:
-  void closeEvent(QCloseEvent* event);
+  void closeEvent(QCloseEvent* event) override;
 
-private Q_SLOTS:
+private:
+  enum : int
+  {
+    MAX_DISPLAYED_SCAN_RESULTS = 5000,
+    SCAN_INTERVAL = 100,
+  };
+
   void onSystemStarted();
   void onSystemDestroyed();
 
@@ -42,18 +46,13 @@ private Q_SLOTS:
   void freezeWatchClicked();
   void removeWatchClicked();
   void scanCurrentItemChanged(QTableWidgetItem* current, QTableWidgetItem* previous);
-  void watchCurrentItemChanged(QTableWidgetItem* current, QTableWidgetItem* previous);
   void scanItemChanged(QTableWidgetItem* item);
+  void scanItemDoubleClicked(QTableWidgetItem* item);
+  void watchCurrentItemChanged(QTableWidgetItem* current, QTableWidgetItem* previous);
   void watchItemChanged(QTableWidgetItem* item);
+  void watchItemDoubleClicked(QTableWidgetItem* item);
   void updateScanValue();
   void updateScanUi();
-
-private:
-  enum : int
-  {
-    MAX_DISPLAYED_SCAN_RESULTS = 5000,
-    SCAN_INTERVAL = 100,
-  };
 
   void setupAdditionalUi();
   void connectUi();
@@ -62,6 +61,8 @@ private:
   void updateResultsValues();
   void updateWatch();
   void updateWatchValues();
+
+  void tryOpenAddressInMemoryEditor(VirtualMemoryAddress address);
 
   int getSelectedResultIndexFirst() const;
   int getSelectedResultIndexLast() const;

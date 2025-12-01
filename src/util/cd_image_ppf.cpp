@@ -1,9 +1,10 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cd_image.h"
 
 #include "common/assert.h"
+#include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/path.h"
@@ -29,27 +30,26 @@ public:
   CDImagePPF();
   ~CDImagePPF() override;
 
-  bool Open(const char* filename, std::unique_ptr<CDImage> parent_image);
+  bool Open(const char* filename, std::unique_ptr<CDImage> parent_image, Error* error);
 
   bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index) override;
   bool HasSubchannelData() const override;
   s64 GetSizeOnDisk() const override;
 
-  std::string GetMetadata(std::string_view type) const override;
-  std::string GetSubImageMetadata(u32 index, std::string_view type) const override;
+  std::string GetSubImageTitle(u32 index) const override;
 
-  PrecacheResult Precache(ProgressCallback* progress = ProgressCallback::NullProgressCallback) override;
+  PrecacheResult Precache(ProgressCallback* progress, Error* error) override;
 
 protected:
   bool ReadSectorFromIndex(void* buffer, const Index& index, LBA lba_in_index) override;
 
 private:
-  bool ReadV1Patch(std::FILE* fp);
-  bool ReadV2Patch(std::FILE* fp);
-  bool ReadV3Patch(std::FILE* fp);
+  bool ReadV1Patch(std::FILE* fp, Error* error);
+  bool ReadV2Patch(std::FILE* fp, Error* error);
+  bool ReadV3Patch(std::FILE* fp, Error* error);
   u32 ReadFileIDDiz(std::FILE* fp, u32 version);
 
-  bool AddPatch(u64 offset, const u8* patch, u32 patch_size);
+  bool AddPatch(u64 offset, const u8* patch, u32 patch_size, Error* error);
 
   std::unique_ptr<CDImage> m_parent_image;
   std::vector<u8> m_replacement_data;
@@ -64,12 +64,12 @@ CDImagePPF::CDImagePPF() = default;
 
 CDImagePPF::~CDImagePPF() = default;
 
-bool CDImagePPF::Open(const char* filename, std::unique_ptr<CDImage> parent_image)
+bool CDImagePPF::Open(const char* filename, std::unique_ptr<CDImage> parent_image, Error* error)
 {
-  auto fp = FileSystem::OpenManagedSharedCFile(filename, "rb", FileSystem::FileShareMode::DenyWrite);
+  auto fp = FileSystem::OpenManagedSharedCFile(filename, "rb", FileSystem::FileShareMode::DenyWrite, error);
   if (!fp)
   {
-    ERROR_LOG("Failed to open '{}'", Path::GetFileName(filename));
+    Error::AddPrefixFmt(error, "Failed to open '{}'", Path::GetFileName(filename));
     return false;
   }
 
@@ -78,7 +78,7 @@ bool CDImagePPF::Open(const char* filename, std::unique_ptr<CDImage> parent_imag
   u32 magic;
   if (std::fread(&magic, sizeof(magic), 1, fp.get()) != 1)
   {
-    ERROR_LOG("Failed to read magic from '{}'", Path::GetFileName(filename));
+    Error::SetErrno(error, "Failed to read PPF magic: ", errno);
     return false;
   }
 
@@ -94,13 +94,13 @@ bool CDImagePPF::Open(const char* filename, std::unique_ptr<CDImage> parent_imag
   m_parent_image = std::move(parent_image);
 
   if (magic == 0x33465050) // PPF3
-    return ReadV3Patch(fp.get());
+    return ReadV3Patch(fp.get(), error);
   else if (magic == 0x32465050) // PPF2
-    return ReadV2Patch(fp.get());
+    return ReadV2Patch(fp.get(), error);
   else if (magic == 0x31465050) // PPF1
-    return ReadV1Patch(fp.get());
+    return ReadV1Patch(fp.get(), error);
 
-  ERROR_LOG("Unknown PPF magic {:08X}", magic);
+  Error::SetStringFmt(error, "Unknown PPF magic {:08X}", magic);
   return false;
 }
 
@@ -144,12 +144,12 @@ u32 CDImagePPF::ReadFileIDDiz(std::FILE* fp, u32 version)
   return dlen;
 }
 
-bool CDImagePPF::ReadV1Patch(std::FILE* fp)
+bool CDImagePPF::ReadV1Patch(std::FILE* fp, Error* error)
 {
   char desc[DESC_SIZE + 1] = {};
   if (std::fseek(fp, 6, SEEK_SET) != 0 || std::fread(desc, sizeof(char), DESC_SIZE, fp) != DESC_SIZE) [[unlikely]]
   {
-    ERROR_LOG("Failed to read description");
+    Error::SetErrno(error, "Failed to read description: ", errno);
     return false;
   }
 
@@ -157,16 +157,22 @@ bool CDImagePPF::ReadV1Patch(std::FILE* fp)
   if (std::fseek(fp, 0, SEEK_END) != 0 || (filelen = static_cast<u32>(std::ftell(fp))) == 0 || filelen < 56)
     [[unlikely]]
   {
-    ERROR_LOG("Invalid ppf file");
+    Error::SetErrno(error, "Invalid ppf file: ", errno);
     return false;
   }
 
   u32 count = filelen - 56;
   if (count <= 0)
+  {
+    Error::SetStringView(error, "Invalid count/filelen");
     return false;
+  }
 
   if (std::fseek(fp, 56, SEEK_SET) != 0)
+  {
+    Error::SetErrno(error, "Failed to seek to patch data: ", errno);
     return false;
+  }
 
   std::vector<u8> temp;
   while (count > 0)
@@ -176,18 +182,18 @@ bool CDImagePPF::ReadV1Patch(std::FILE* fp)
     if (std::fread(&offset, sizeof(offset), 1, fp) != 1 || std::fread(&chunk_size, sizeof(chunk_size), 1, fp) != 1)
       [[unlikely]]
     {
-      ERROR_LOG("Incomplete ppf");
+      Error::SetErrno(error, "Incomplete ppf: ", errno);
       return false;
     }
 
     temp.resize(chunk_size);
     if (std::fread(temp.data(), 1, chunk_size, fp) != chunk_size) [[unlikely]]
     {
-      ERROR_LOG("Failed to read patch data");
+      Error::SetErrno(error, "Failed to read patch data: ", errno);
       return false;
     }
 
-    if (!AddPatch(offset, temp.data(), chunk_size)) [[unlikely]]
+    if (!AddPatch(offset, temp.data(), chunk_size, error)) [[unlikely]]
       return false;
 
     count -= sizeof(offset) + sizeof(chunk_size) + chunk_size;
@@ -197,12 +203,12 @@ bool CDImagePPF::ReadV1Patch(std::FILE* fp)
   return true;
 }
 
-bool CDImagePPF::ReadV2Patch(std::FILE* fp)
+bool CDImagePPF::ReadV2Patch(std::FILE* fp, Error* error)
 {
   char desc[DESC_SIZE + 1] = {};
   if (std::fseek(fp, 6, SEEK_SET) != 0 || std::fread(desc, sizeof(char), DESC_SIZE, fp) != DESC_SIZE) [[unlikely]]
   {
-    ERROR_LOG("Failed to read description");
+    Error::SetErrno(error, "Failed to read description: ", errno);
     return false;
   }
 
@@ -213,7 +219,7 @@ bool CDImagePPF::ReadV2Patch(std::FILE* fp)
   u32 origlen;
   if (std::fseek(fp, 56, SEEK_SET) != 0 || std::fread(&origlen, sizeof(origlen), 1, fp) != 1) [[unlikely]]
   {
-    ERROR_LOG("Failed to read size");
+    Error::SetErrno(error, "Failed to read size: ", errno);
     return false;
   }
 
@@ -221,7 +227,7 @@ bool CDImagePPF::ReadV2Patch(std::FILE* fp)
   temp.resize(BLOCKCHECK_SIZE);
   if (std::fread(temp.data(), 1, BLOCKCHECK_SIZE, fp) != BLOCKCHECK_SIZE) [[unlikely]]
   {
-    ERROR_LOG("Failed to read blockcheck data");
+    Error::SetErrno(error, "Failed to read blockcheck data: ", errno);
     return false;
   }
 
@@ -246,7 +252,7 @@ bool CDImagePPF::ReadV2Patch(std::FILE* fp)
   if (std::fseek(fp, 0, SEEK_END) != 0 || (filelen = static_cast<u32>(std::ftell(fp))) == 0 || filelen < 1084)
     [[unlikely]]
   {
-    ERROR_LOG("Invalid ppf file");
+    Error::SetErrno(error, "Invalid ppf file: ", errno);
     return false;
   }
 
@@ -267,18 +273,18 @@ bool CDImagePPF::ReadV2Patch(std::FILE* fp)
     if (std::fread(&offset, sizeof(offset), 1, fp) != 1 || std::fread(&chunk_size, sizeof(chunk_size), 1, fp) != 1)
       [[unlikely]]
     {
-      ERROR_LOG("Incomplete ppf");
+      Error::SetErrno(error, "Incomplete ppf: ", errno);
       return false;
     }
 
     temp.resize(chunk_size);
     if (std::fread(temp.data(), 1, chunk_size, fp) != chunk_size) [[unlikely]]
     {
-      ERROR_LOG("Failed to read patch data");
+      Error::SetErrno(error, "Failed to read patch data: ", errno);
       return false;
     }
 
-    if (!AddPatch(offset, temp.data(), chunk_size))
+    if (!AddPatch(offset, temp.data(), chunk_size, error))
       return false;
 
     count -= sizeof(offset) + sizeof(chunk_size) + chunk_size;
@@ -288,12 +294,12 @@ bool CDImagePPF::ReadV2Patch(std::FILE* fp)
   return true;
 }
 
-bool CDImagePPF::ReadV3Patch(std::FILE* fp)
+bool CDImagePPF::ReadV3Patch(std::FILE* fp, Error* error)
 {
   char desc[DESC_SIZE + 1] = {};
   if (std::fseek(fp, 6, SEEK_SET) != 0 || std::fread(desc, sizeof(char), DESC_SIZE, fp) != DESC_SIZE)
   {
-    ERROR_LOG("Failed to read description");
+    Error::SetErrno(error, "Failed to read description: ", errno);
     return false;
   }
 
@@ -307,7 +313,7 @@ bool CDImagePPF::ReadV3Patch(std::FILE* fp)
   if (std::fseek(fp, 56, SEEK_SET) != 0 || std::fread(&image_type, sizeof(image_type), 1, fp) != 1 ||
       std::fread(&block_check, sizeof(block_check), 1, fp) != 1 || std::fread(&undo, sizeof(undo), 1, fp) != 1)
   {
-    ERROR_LOG("Failed to read headers");
+    Error::SetErrno(error, "Failed to read headers: ", errno);
     return false;
   }
 
@@ -319,7 +325,7 @@ bool CDImagePPF::ReadV3Patch(std::FILE* fp)
   u32 seekpos = (block_check) ? 1084 : 60;
   if (seekpos >= count)
   {
-    ERROR_LOG("File is too short");
+    Error::SetStringView(error, "File is too short");
     return false;
   }
 
@@ -329,7 +335,7 @@ bool CDImagePPF::ReadV3Patch(std::FILE* fp)
     const u32 extralen = idlen + 18 + 16 + 2;
     if (count < extralen)
     {
-      ERROR_LOG("File is too short (diz)");
+      Error::SetStringView(error, "File is too short (diz)");
       return false;
     }
 
@@ -337,7 +343,10 @@ bool CDImagePPF::ReadV3Patch(std::FILE* fp)
   }
 
   if (std::fseek(fp, seekpos, SEEK_SET) != 0)
+  {
+    Error::SetErrno(error, "Failed to seek to patch data: ", errno);
     return false;
+  }
 
   std::vector<u8> temp;
 
@@ -347,18 +356,18 @@ bool CDImagePPF::ReadV3Patch(std::FILE* fp)
     u8 chunk_size;
     if (std::fread(&offset, sizeof(offset), 1, fp) != 1 || std::fread(&chunk_size, sizeof(chunk_size), 1, fp) != 1)
     {
-      ERROR_LOG("Incomplete ppf");
+      Error::SetErrno(error, "Incomplete ppf: ", errno);
       return false;
     }
 
     temp.resize(chunk_size);
     if (std::fread(temp.data(), 1, chunk_size, fp) != chunk_size)
     {
-      ERROR_LOG("Failed to read patch data");
+      Error::SetErrno(error, "Failed to read patch data: ", errno);
       return false;
     }
 
-    if (!AddPatch(offset, temp.data(), chunk_size))
+    if (!AddPatch(offset, temp.data(), chunk_size, error))
       return false;
 
     count -= sizeof(offset) + sizeof(chunk_size) + chunk_size;
@@ -368,7 +377,7 @@ bool CDImagePPF::ReadV3Patch(std::FILE* fp)
   return true;
 }
 
-bool CDImagePPF::AddPatch(u64 offset, const u8* patch, u32 patch_size)
+bool CDImagePPF::AddPatch(u64 offset, const u8* patch, u32 patch_size, Error* error)
 {
   DEBUG_LOG("Starting applying patch of {} bytes at at offset {}", patch_size, offset);
 
@@ -392,7 +401,7 @@ bool CDImagePPF::AddPatch(u64 offset, const u8* patch, u32 patch_size)
       if (!m_parent_image->Seek(sector_index) ||
           !m_parent_image->ReadRawSector(&m_replacement_data[replacement_buffer_start], nullptr))
       {
-        ERROR_LOG("Failed to read sector {} from parent image", sector_index);
+        Error::SetStringFmt(error, "Failed to read sector {} from parent image", sector_index);
         return false;
       }
 
@@ -420,24 +429,15 @@ bool CDImagePPF::HasSubchannelData() const
   return m_parent_image->HasSubchannelData();
 }
 
-std::string CDImagePPF::GetMetadata(std::string_view type) const
-{
-  return m_parent_image->GetMetadata(type);
-}
-
-std::string CDImagePPF::GetSubImageMetadata(u32 index, std::string_view type) const
+std::string CDImagePPF::GetSubImageTitle(u32 index) const
 {
   // We only support a single sub-image for patched games.
-  std::string ret;
-  if (index == 0)
-    ret = m_parent_image->GetSubImageMetadata(index, type);
-
-  return ret;
+  return (index == 0) ? m_parent_image->GetSubImageTitle(index) : std::string();
 }
 
-CDImage::PrecacheResult CDImagePPF::Precache(ProgressCallback* progress /*= ProgressCallback::NullProgressCallback*/)
+CDImage::PrecacheResult CDImagePPF::Precache(ProgressCallback* progress, Error* error)
 {
-  return m_parent_image->Precache(progress);
+  return m_parent_image->Precache(progress, error);
 }
 
 bool CDImagePPF::ReadSectorFromIndex(void* buffer, const Index& index, LBA lba_in_index)
@@ -458,11 +458,10 @@ s64 CDImagePPF::GetSizeOnDisk() const
   return m_patch_size + m_parent_image->GetSizeOnDisk();
 }
 
-std::unique_ptr<CDImage> CDImage::OverlayPPFPatch(const char* path, std::unique_ptr<CDImage> parent_image,
-                                                  ProgressCallback* progress)
+std::unique_ptr<CDImage> CDImage::OverlayPPFPatch(const char* path, std::unique_ptr<CDImage> parent_image, Error* error)
 {
   std::unique_ptr<CDImagePPF> ppf_image = std::make_unique<CDImagePPF>();
-  if (!ppf_image->Open(path, std::move(parent_image)))
+  if (!ppf_image->Open(path, std::move(parent_image), error))
     return {};
 
   return ppf_image;

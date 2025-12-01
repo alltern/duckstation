@@ -57,17 +57,16 @@ D3D11Device::~D3D11Device()
   Assert(!m_device);
 }
 
-bool D3D11Device::CreateDeviceAndMainSwapChain(std::string_view adapter, FeatureMask disabled_features,
-                                               const WindowInfo& wi, GPUVSyncMode vsync_mode,
-                                               bool allow_present_throttle,
+bool D3D11Device::CreateDeviceAndMainSwapChain(std::string_view adapter, CreateFlags create_flags, const WindowInfo& wi,
+                                               GPUVSyncMode vsync_mode, bool allow_present_throttle,
                                                const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
                                                std::optional<bool> exclusive_fullscreen_control, Error* error)
 {
   std::unique_lock lock(s_instance_mutex);
 
-  UINT create_flags = 0;
+  UINT d3d_create_flags = 0;
   if (m_debug_device)
-    create_flags |= D3D11_CREATE_DEVICE_DEBUG;
+    d3d_create_flags |= D3D11_CREATE_DEVICE_DEBUG;
 
   m_dxgi_factory = D3DCommon::CreateFactory(m_debug_device, error);
   if (!m_dxgi_factory)
@@ -82,7 +81,7 @@ bool D3D11Device::CreateDeviceAndMainSwapChain(std::string_view adapter, Feature
   ComPtr<ID3D11Device> temp_device;
   ComPtr<ID3D11DeviceContext> temp_context;
   HRESULT hr;
-  if (!D3DCommon::CreateD3D11Device(dxgi_adapter.Get(), create_flags, requested_feature_levels.data(),
+  if (!D3DCommon::CreateD3D11Device(dxgi_adapter.Get(), d3d_create_flags, requested_feature_levels.data(),
                                     static_cast<UINT>(requested_feature_levels.size()), &temp_device, nullptr,
                                     &temp_context, error))
   {
@@ -129,7 +128,7 @@ bool D3D11Device::CreateDeviceAndMainSwapChain(std::string_view adapter, Feature
            D3DCommon::GetFeatureLevelString(D3DCommon::GetRenderAPIVersionForFeatureLevel(m_max_feature_level)));
 
   SetDriverType(driver_type);
-  SetFeatures(disabled_features);
+  SetFeatures(create_flags);
 
   if (!wi.IsSurfaceless())
   {
@@ -155,7 +154,7 @@ void D3D11Device::DestroyDevice()
   m_device.Reset();
 }
 
-void D3D11Device::SetFeatures(FeatureMask disabled_features)
+void D3D11Device::SetFeatures(CreateFlags create_flags)
 {
   const D3D_FEATURE_LEVEL feature_level = m_device->GetFeatureLevel();
 
@@ -173,17 +172,17 @@ void D3D11Device::SetFeatures(FeatureMask disabled_features)
     }
   }
 
-  m_features.dual_source_blend = !(disabled_features & FEATURE_MASK_DUAL_SOURCE_BLEND);
+  m_features.dual_source_blend = !HasCreateFlag(create_flags, CreateFlags::DisableDualSourceBlend);
   m_features.framebuffer_fetch = false;
   m_features.per_sample_shading = (feature_level >= D3D_FEATURE_LEVEL_10_1);
   m_features.noperspective_interpolation = true;
   m_features.texture_copy_to_self = false;
-  m_features.texture_buffers = !(disabled_features & FEATURE_MASK_TEXTURE_BUFFERS);
+  m_features.texture_buffers = !HasCreateFlag(create_flags, CreateFlags::DisableTextureBuffers);
   m_features.texture_buffers_emulated_with_ssbo = false;
   m_features.feedback_loops = false;
-  m_features.geometry_shaders = !(disabled_features & FEATURE_MASK_GEOMETRY_SHADERS);
+  m_features.geometry_shaders = !HasCreateFlag(create_flags, CreateFlags::DisableGeometryShaders);
   m_features.compute_shaders =
-    (!(disabled_features & FEATURE_MASK_COMPUTE_SHADERS) && feature_level >= D3D_FEATURE_LEVEL_11_0);
+    (!HasCreateFlag(create_flags, CreateFlags::DisableComputeShaders) && feature_level >= D3D_FEATURE_LEVEL_11_0);
   m_features.partial_msaa_resolve = false;
   m_features.memory_import = false;
   m_features.exclusive_fullscreen = true;
@@ -194,7 +193,7 @@ void D3D11Device::SetFeatures(FeatureMask disabled_features)
   m_features.pipeline_cache = false;
   m_features.prefer_unused_textures = false;
   m_features.raster_order_views = false;
-  if (!(disabled_features & FEATURE_MASK_RASTER_ORDER_VIEWS))
+  if (!HasCreateFlag(create_flags, CreateFlags::DisableRasterOrderViews))
   {
     D3D11_FEATURE_DATA_D3D11_OPTIONS2 data = {};
     m_features.raster_order_views =
@@ -203,11 +202,11 @@ void D3D11Device::SetFeatures(FeatureMask disabled_features)
   }
 
   m_features.dxt_textures =
-    (!(disabled_features & FEATURE_MASK_COMPRESSED_TEXTURES) &&
+    (!HasCreateFlag(create_flags, CreateFlags::DisableCompressedTextures) &&
      (SupportsTextureFormat(GPUTexture::Format::BC1) && SupportsTextureFormat(GPUTexture::Format::BC2) &&
       SupportsTextureFormat(GPUTexture::Format::BC3)));
-  m_features.bptc_textures =
-    (!(disabled_features & FEATURE_MASK_COMPRESSED_TEXTURES) && SupportsTextureFormat(GPUTexture::Format::BC7));
+  m_features.bptc_textures = (!HasCreateFlag(create_flags, CreateFlags::DisableCompressedTextures) &&
+                              SupportsTextureFormat(GPUTexture::Format::BC7));
 }
 
 D3D11SwapChain::D3D11SwapChain(const WindowInfo& wi, GPUVSyncMode vsync_mode, bool allow_present_throttle,
@@ -546,8 +545,21 @@ bool D3D11Device::CreateBuffers(Error* error)
     return false;
   }
 
+  const CD3D11_BUFFER_DESC pc_desc(PUSH_CONSTANT_BUFFER_SIZE, D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC,
+                                   D3D11_CPU_ACCESS_WRITE);
+  if (const HRESULT hr = m_device->CreateBuffer(&pc_desc, nullptr, m_push_constant_buffer.GetAddressOf()); FAILED(hr))
+  {
+    Error::SetHResult(error, "Failed to create push constant buffer: ", hr);
+    return false;
+  }
+
   // Index buffer never changes :)
   m_context->IASetIndexBuffer(m_index_buffer.GetD3DBuffer(), DXGI_FORMAT_R16_UINT, 0);
+  m_context->VSSetConstantBuffers(1, 1, m_push_constant_buffer.GetAddressOf());
+  m_context->PSSetConstantBuffers(1, 1, m_push_constant_buffer.GetAddressOf());
+  if (m_features.compute_shaders)
+    m_context->CSSetConstantBuffers(1, 1, m_push_constant_buffer.GetAddressOf());
+
   return true;
 }
 
@@ -920,15 +932,19 @@ void D3D11Device::UnmapIndexBuffer(u32 used_index_count)
 
 void D3D11Device::PushUniformBuffer(const void* data, u32 data_size)
 {
-  const u32 req_align =
-    m_uniform_buffer.IsUsingMapNoOverwrite() ? UNIFORM_BUFFER_ALIGNMENT : UNIFORM_BUFFER_ALIGNMENT_DISCARD;
-  const u32 req_size = Common::AlignUpPow2(data_size, req_align);
-  const auto res = m_uniform_buffer.Map(m_context.Get(), req_align, req_size);
-  std::memcpy(res.pointer, data, data_size);
-  m_uniform_buffer.Unmap(m_context.Get(), req_size);
-  s_stats.buffer_streamed += data_size;
+  DebugAssert(data_size <= PUSH_CONSTANT_BUFFER_SIZE);
 
-  BindUniformBuffer(res.index_aligned * UNIFORM_BUFFER_ALIGNMENT, req_size);
+  D3D11_MAPPED_SUBRESOURCE mapped;
+  if (const HRESULT hr = m_context->Map(m_push_constant_buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+      FAILED(hr))
+  {
+    ERROR_LOG("Failed to map push constant buffer: {:08X}", static_cast<unsigned>(hr));
+    return;
+  }
+
+  std::memcpy(mapped.pData, data, data_size);
+  m_context->Unmap(m_push_constant_buffer.Get(), 0);
+  s_stats.buffer_streamed += data_size;
 }
 
 void* D3D11Device::MapUniformBuffer(u32 size)
@@ -1170,6 +1186,13 @@ void D3D11Device::Draw(u32 vertex_count, u32 base_vertex)
   m_context->Draw(vertex_count, base_vertex);
 }
 
+void D3D11Device::DrawWithPushConstants(u32 vertex_count, u32 base_vertex, const void* push_constants,
+                                        u32 push_constants_size)
+{
+  PushUniformBuffer(push_constants, push_constants_size);
+  Draw(vertex_count, base_vertex);
+}
+
 void D3D11Device::DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex)
 {
   DebugAssert(!m_vertex_buffer.IsMapped() && !m_index_buffer.IsMapped() && !m_current_compute_shader);
@@ -1177,9 +1200,11 @@ void D3D11Device::DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex)
   m_context->DrawIndexed(index_count, base_index, base_vertex);
 }
 
-void D3D11Device::DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type)
+void D3D11Device::DrawIndexedWithPushConstants(u32 index_count, u32 base_index, u32 base_vertex,
+                                               const void* push_constants, u32 push_constants_size)
 {
-  Panic("Barriers are not supported");
+  PushUniformBuffer(push_constants, push_constants_size);
+  DrawIndexed(index_count, base_index, base_vertex);
 }
 
 void D3D11Device::Dispatch(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x, u32 group_size_y,
@@ -1192,4 +1217,12 @@ void D3D11Device::Dispatch(u32 threads_x, u32 threads_y, u32 threads_z, u32 grou
   const u32 groups_y = threads_y / group_size_y;
   const u32 groups_z = threads_z / group_size_z;
   m_context->Dispatch(groups_x, groups_y, groups_z);
+}
+
+void D3D11Device::DispatchWithPushConstants(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x,
+                                            u32 group_size_y, u32 group_size_z, const void* push_constants,
+                                            u32 push_constants_size)
+{
+  PushUniformBuffer(push_constants, push_constants_size);
+  Dispatch(threads_x, threads_y, threads_z, group_size_x, group_size_y, group_size_z);
 }

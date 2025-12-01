@@ -17,22 +17,17 @@
 #include "fmt/format.h"
 
 #include <QtCore/QDateTime>
-#include <QtCore/QFuture>
 #include <QtCore/QSignalBlocker>
-#include <QtCore/QStringBuilder>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QDialogButtonBox>
-#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QTextBrowser>
 
 #include "moc_gamesummarywidget.cpp"
 
-GameSummaryWidget::GameSummaryWidget(const std::string& path, const std::string& serial, DiscRegion region,
-                                     const GameDatabase::Entry* entry, SettingsWindow* dialog, QWidget* parent)
+GameSummaryWidget::GameSummaryWidget(const GameList::Entry* entry, SettingsWindow* dialog, QWidget* parent)
   : m_dialog(dialog)
 {
   m_ui.setupUi(this);
-  m_ui.revision->setVisible(false);
 
   for (u32 i = 0; i < static_cast<u32>(GameList::EntryType::MaxCount); i++)
   {
@@ -56,7 +51,7 @@ GameSummaryWidget::GameSummaryWidget(const std::string& path, const std::string&
 
   // I hate this so much.
   const std::string_view default_language =
-    entry ? entry->GetLanguageFlagName(region) : Settings::GetDiscRegionName(region);
+    entry->dbentry ? entry->dbentry->GetLanguageFlagName(entry->region) : Settings::GetDiscRegionName(entry->region);
   m_ui.customLanguage->addItem(QtUtils::GetIconForLanguage(default_language), tr("Show Default Flag"));
   for (u32 i = 0; i < static_cast<u32>(GameDatabase::Language::MaxCount); i++)
   {
@@ -64,9 +59,10 @@ GameSummaryWidget::GameSummaryWidget(const std::string& path, const std::string&
     m_ui.customLanguage->addItem(QtUtils::GetIconForLanguage(language_name), QString::fromUtf8(language_name));
   }
 
-  populateUi(path, serial, region, entry);
+  populateUi(entry);
 
-  connect(m_ui.compatibilityComments, &QToolButton::clicked, this, &GameSummaryWidget::onCompatibilityCommentsClicked);
+  connect(m_ui.compatibilityComments, &QAbstractButton::clicked, this,
+          &GameSummaryWidget::onCompatibilityCommentsClicked);
   connect(m_ui.inputProfile, &QComboBox::currentIndexChanged, this, &GameSummaryWidget::onInputProfileChanged);
   connect(m_ui.editInputProfile, &QAbstractButton::clicked, this, &GameSummaryWidget::onEditInputProfileClicked);
   connect(m_ui.computeHashes, &QAbstractButton::clicked, this, &GameSummaryWidget::onComputeHashClicked);
@@ -115,69 +111,78 @@ void GameSummaryWidget::reloadGameSettings()
   m_ui.editInputProfile->setEnabled(m_ui.inputProfile->currentIndex() >= 1);
 }
 
-void GameSummaryWidget::populateUi(const std::string& path, const std::string& serial, DiscRegion region,
-                                   const GameDatabase::Entry* entry)
+void GameSummaryWidget::populateUi(const GameList::Entry* entry)
 {
-  m_path = path;
+  m_path = entry->path;
 
-  m_ui.path->setText(QString::fromStdString(path));
-  m_ui.serial->setText(QString::fromStdString(serial));
-  m_ui.region->setCurrentIndex(static_cast<int>(region));
+  m_ui.path->setText(QString::fromStdString(entry->path));
+  m_ui.serial->setText(
+    QtUtils::StringViewToQString(TinyString::from_format("{} ({:016X})", entry->serial, entry->hash)));
+  m_ui.title->setText(QtUtils::StringViewToQString(entry->GetDisplayTitle(GameList::ShouldShowLocalizedTitles())));
+  m_ui.region->setCurrentIndex(static_cast<int>(entry->region));
+  m_ui.entryType->setCurrentIndex(static_cast<int>(entry->type));
 
-  if (entry)
+  m_ui.restoreTitle->setEnabled(entry->has_custom_title);
+  m_ui.restoreRegion->setEnabled(entry->has_custom_region);
+
+  // can't set languages on disc set entries
+  m_ui.customLanguage->setCurrentIndex(entry->HasCustomLanguage() ? (static_cast<u32>(entry->custom_language) + 1) : 0);
+  if (entry->IsDiscSet())
+    m_ui.customLanguage->setEnabled(false);
+
+  if (const GameDatabase::Entry* dbentry = entry->dbentry)
   {
-    m_ui.title->setText(QtUtils::StringViewToQString(entry->title));
-    m_ui.compatibility->setCurrentIndex(static_cast<int>(entry->compatibility));
-    m_ui.genre->setText(entry->genre.empty() ? tr("Unknown") : QtUtils::StringViewToQString(entry->genre));
-    if (!entry->developer.empty() && !entry->publisher.empty() && entry->developer != entry->publisher)
+    m_ui.compatibility->setCurrentIndex(static_cast<int>(dbentry->compatibility));
+    m_ui.genre->setText(dbentry->genre.empty() ? tr("Unknown") : QtUtils::StringViewToQString(dbentry->genre));
+    if (!dbentry->developer.empty() && !dbentry->publisher.empty() && dbentry->developer != dbentry->publisher)
       m_ui.developer->setText(tr("%1 (Published by %2)")
-                                .arg(QtUtils::StringViewToQString(entry->developer))
-                                .arg(QtUtils::StringViewToQString(entry->publisher)));
-    else if (!entry->developer.empty())
-      m_ui.developer->setText(QtUtils::StringViewToQString(entry->developer));
-    else if (!entry->publisher.empty())
-      m_ui.developer->setText(tr("Published by %1").arg(QtUtils::StringViewToQString(entry->publisher)));
+                                .arg(QtUtils::StringViewToQString(dbentry->developer))
+                                .arg(QtUtils::StringViewToQString(dbentry->publisher)));
+    else if (!dbentry->developer.empty())
+      m_ui.developer->setText(QtUtils::StringViewToQString(dbentry->developer));
+    else if (!dbentry->publisher.empty())
+      m_ui.developer->setText(tr("Published by %1").arg(QtUtils::StringViewToQString(dbentry->publisher)));
     else
       m_ui.developer->setText(tr("Unknown"));
 
     QString release_info;
-    if (entry->release_date != 0)
+    if (dbentry->release_date != 0)
     {
-      const QString date = QDateTime::fromSecsSinceEpoch(static_cast<qint64>(entry->release_date), QTimeZone::utc())
+      const QString date = QDateTime::fromSecsSinceEpoch(static_cast<qint64>(dbentry->release_date), QTimeZone::utc())
                              .toString(QtHost::GetApplicationLocale().dateFormat());
       release_info = tr("Released %1").arg(date);
     }
-    if (entry->min_players != 0)
+    if (dbentry->min_players != 0)
     {
       if (!release_info.isEmpty())
         release_info.append(", ");
-      if (entry->min_players != entry->max_players)
-        release_info.append(tr("%1-%2 players").arg(entry->min_players).arg(entry->max_players));
+      if (dbentry->min_players != dbentry->max_players)
+        release_info.append(tr("%1-%2 players").arg(dbentry->min_players).arg(dbentry->max_players));
       else
-        release_info.append(tr("%1 players").arg(entry->min_players));
+        release_info.append(tr("%1 players").arg(dbentry->min_players));
     }
-    if (entry->min_blocks != 0)
+    if (dbentry->min_blocks != 0)
     {
       if (!release_info.isEmpty())
         release_info.append(", ");
-      if (entry->min_blocks != entry->max_blocks)
-        release_info.append(tr("%1-%2 memory card blocks").arg(entry->min_blocks).arg(entry->max_blocks));
+      if (dbentry->min_blocks != dbentry->max_blocks)
+        release_info.append(tr("%1-%2 memory card blocks").arg(dbentry->min_blocks).arg(dbentry->max_blocks));
       else
-        release_info.append(tr("%1 memory card blocks").arg(entry->min_blocks));
+        release_info.append(tr("%1 memory card blocks").arg(dbentry->min_blocks));
     }
     if (!release_info.isEmpty())
       m_ui.releaseInfo->setText(release_info);
     else
       m_ui.releaseInfo->setText(tr("Unknown"));
 
-    m_ui.languages->setText(QtUtils::StringViewToQString(entry->GetLanguagesString()));
+    m_ui.languages->setText(QtUtils::StringViewToQString(dbentry->GetLanguagesString()));
 
     QString controllers;
-    if (entry->supported_controllers != 0 && entry->supported_controllers != static_cast<u16>(-1))
+    if (dbentry->supported_controllers != 0 && dbentry->supported_controllers != static_cast<u16>(-1))
     {
       for (u32 i = 0; i < static_cast<u32>(ControllerType::Count); i++)
       {
-        if ((entry->supported_controllers & static_cast<u16>(1u << i)) != 0)
+        if ((dbentry->supported_controllers & static_cast<u16>(1u << i)) != 0)
         {
           if (!controllers.isEmpty())
             controllers.append(", ");
@@ -189,27 +194,19 @@ void GameSummaryWidget::populateUi(const std::string& path, const std::string& s
       controllers = tr("Unknown");
     m_ui.controllers->setText(controllers);
 
-    m_compatibility_comments = QString::fromStdString(entry->GenerateCompatibilityReport());
+    m_compatibility_comments = QString::fromStdString(dbentry->GenerateCompatibilityReport());
   }
   else
   {
-    m_ui.title->setText(tr("Unknown"));
     m_ui.genre->setText(tr("Unknown"));
     m_ui.developer->setText(tr("Unknown"));
     m_ui.releaseInfo->setText(tr("Unknown"));
     m_ui.controllers->setText(tr("Unknown"));
   }
 
+  if (entry->dbentry && entry->dbentry->disc_set)
   {
-    auto lock = GameList::GetLock();
-    const GameList::Entry* gentry = GameList::GetEntryForPath(path);
-    if (gentry)
-      m_ui.entryType->setCurrentIndex(static_cast<int>(gentry->type));
-  }
-
-  if (entry && !entry->disc_set_serials.empty())
-  {
-    if (serial == entry->disc_set_serials.front())
+    if (entry->dbentry->IsFirstDiscInSet())
     {
       m_ui.separateDiscSettings->setCheckState(
         m_dialog->getBoolValue("Main", "UseSeparateConfigForDiscSet", std::nullopt).value_or(false) ? Qt::Checked :
@@ -229,7 +226,7 @@ void GameSummaryWidget::populateUi(const std::string& path, const std::string& s
     m_ui.separateDiscSettings->setVisible(false);
   }
 
-  m_ui.compatibilityComments->setVisible(!m_compatibility_comments.isEmpty());
+  m_ui.compatibilityComments->setEnabled(!m_compatibility_comments.isEmpty());
 
   m_ui.inputProfile->addItem(QIcon::fromTheme(QStringLiteral("global-line")), tr("Use Global Settings"));
   m_ui.inputProfile->addItem(QIcon::fromTheme(QStringLiteral("controller-digital-line")),
@@ -238,9 +235,10 @@ void GameSummaryWidget::populateUi(const std::string& path, const std::string& s
     m_ui.inputProfile->addItem(QString::fromStdString(name));
 
   reloadGameSettings();
-  populateCustomAttributes();
-  populateTracksInfo();
-  updateWindowTitle();
+  if (!entry->is_runtime_populated)
+    populateTracksInfo();
+  else
+    disableWidgetsForRuntimeScannedEntry();
 }
 
 void GameSummaryWidget::onSeparateDiscSettingsChanged(Qt::CheckState state)
@@ -251,57 +249,46 @@ void GameSummaryWidget::onSeparateDiscSettingsChanged(Qt::CheckState state)
     m_dialog->removeSettingValue("Main", "UseSeparateConfigForDiscSet");
 }
 
-void GameSummaryWidget::updateWindowTitle()
-{
-  m_dialog->setGameTitle(m_ui.title->text().toStdString());
-}
-
-void GameSummaryWidget::populateCustomAttributes()
-{
-  auto lock = GameList::GetLock();
-  const GameList::Entry* entry = GameList::GetEntryForPath(m_path);
-  if (!entry || entry->IsDiscSet())
-  {
-    m_ui.customLanguage->setEnabled(false);
-    return;
-  }
-
-  {
-    QSignalBlocker sb(m_ui.title);
-    m_ui.title->setText(QString::fromStdString(entry->title));
-    m_ui.restoreTitle->setEnabled(entry->has_custom_title);
-  }
-
-  {
-    QSignalBlocker sb(m_ui.region);
-    m_ui.region->setCurrentIndex(static_cast<int>(entry->region));
-    m_ui.restoreRegion->setEnabled(entry->has_custom_region);
-  }
-
-  {
-    QSignalBlocker sb(m_ui.customLanguage);
-    m_ui.customLanguage->setCurrentIndex(entry->HasCustomLanguage() ? (static_cast<u32>(entry->custom_language) + 1) :
-                                                                      0);
-  }
-}
-
 void GameSummaryWidget::setCustomTitle(const std::string& text)
 {
-  m_ui.restoreTitle->setEnabled(!text.empty());
-
   GameList::SaveCustomTitleForPath(m_path, text);
-  populateCustomAttributes();
-  updateWindowTitle();
+
+  {
+    const auto lock = GameList::GetLock();
+    const GameList::Entry* entry = GameList::GetEntryForPath(m_path);
+    if (entry)
+    {
+      const std::string_view title = entry->GetDisplayTitle(GameList::ShouldShowLocalizedTitles());
+      m_dialog->setGameTitle(title);
+
+      {
+        const QSignalBlocker sb(m_ui.title);
+        m_ui.title->setText(QtUtils::StringViewToQString(title));
+      }
+
+      m_ui.restoreTitle->setEnabled(entry->has_custom_title);
+    }
+  }
+
   g_main_window->refreshGameListModel();
 }
 
 void GameSummaryWidget::setCustomRegion(int region)
 {
-  m_ui.restoreRegion->setEnabled(region >= 0);
-
   GameList::SaveCustomRegionForPath(m_path, (region >= 0) ? std::optional<DiscRegion>(static_cast<DiscRegion>(region)) :
                                                             std::optional<DiscRegion>());
-  populateCustomAttributes();
+
+  {
+    const auto lock = GameList::GetLock();
+    const GameList::Entry* entry = GameList::GetEntryForPath(m_path);
+    if (entry)
+    {
+      const QSignalBlocker sb(m_ui.region);
+      m_ui.region->setCurrentIndex(static_cast<int>(entry->region));
+      m_ui.restoreRegion->setEnabled(entry->has_custom_region);
+    }
+  }
+
   g_main_window->refreshGameListModel();
 }
 
@@ -310,23 +297,8 @@ void GameSummaryWidget::onCustomLanguageChanged(int language)
   GameList::SaveCustomLanguageForPath(
     m_path, (language > 0) ? std::optional<GameDatabase::Language>(static_cast<GameDatabase::Language>(language - 1)) :
                              std::optional<GameDatabase::Language>());
-  populateCustomAttributes();
+
   g_main_window->refreshGameListModel();
-}
-
-void GameSummaryWidget::setRevisionText(const QString& text)
-{
-  if (text.isEmpty())
-    return;
-
-  if (m_ui.verifySpacer)
-  {
-    m_ui.verifyLayout->removeItem(m_ui.verifySpacer);
-    delete m_ui.verifySpacer;
-    m_ui.verifySpacer = nullptr;
-  }
-  m_ui.revision->setText(text);
-  m_ui.revision->setVisible(true);
 }
 
 static QString MSFToString(const CDImage::Position& position)
@@ -342,17 +314,17 @@ void GameSummaryWidget::populateTracksInfo()
   static constexpr std::array<const char*, 8> track_mode_strings = {
     {"Audio", "Mode 1", "Mode 1/Raw", "Mode 2", "Mode 2/Form 1", "Mode 2/Form 2", "Mode 2/Mix", "Mode 2/Raw"}};
 
-  m_ui.tracks->clearContents();
-  QtUtils::SetColumnWidthsForTableView(m_ui.tracks, {70, 75, 70, 70, -1, 40});
+  m_ui.tracks->clear();
+  QtUtils::SetColumnWidthsForTreeView(m_ui.tracks, {80, 90, 70, 70, -1, 40});
 
   std::unique_ptr<CDImage> image = CDImage::Open(m_path.c_str(), false, nullptr);
   if (!image)
     return;
 
-  setRevisionText(tr("%1 tracks covering %2 MB (%3 MB on disk)")
-                    .arg(image->GetTrackCount())
-                    .arg(((image->GetLBACount() * CDImage::RAW_SECTOR_SIZE) + 1048575) / 1048576)
-                    .arg((image->GetSizeOnDisk() + 1048575) / 1048576));
+  m_ui.revision->setText(tr("%1 tracks covering %2 MB (%3 MB on disk)")
+                           .arg(image->GetTrackCount())
+                           .arg(((image->GetLBACount() * CDImage::RAW_SECTOR_SIZE) + 1048575) / 1048576)
+                           .arg((image->GetSizeOnDisk() + 1048575) / 1048576));
 
   const u32 num_tracks = image->GetTrackCount();
   for (u32 track = 1; track <= num_tracks; track++)
@@ -360,45 +332,51 @@ void GameSummaryWidget::populateTracksInfo()
     const CDImage::Position position = image->GetTrackStartMSFPosition(static_cast<u8>(track));
     const CDImage::Position length = image->GetTrackMSFLength(static_cast<u8>(track));
     const CDImage::TrackMode mode = image->GetTrackMode(static_cast<u8>(track));
-    const int row = static_cast<int>(track - 1u);
 
-    QTableWidgetItem* num = new QTableWidgetItem(tr("Track %1").arg(track));
-    num->setIcon(QIcon::fromTheme((mode == CDImage::TrackMode::Audio) ? QStringLiteral("file-music-line") :
-                                                                        QStringLiteral("disc-line")));
-    m_ui.tracks->insertRow(row);
-    m_ui.tracks->setItem(row, 0, num);
-    m_ui.tracks->setItem(row, 1, new QTableWidgetItem(track_mode_strings[static_cast<u32>(mode)]));
-    m_ui.tracks->setItem(row, 2, new QTableWidgetItem(MSFToString(position)));
-    m_ui.tracks->setItem(row, 3, new QTableWidgetItem(MSFToString(length)));
-    m_ui.tracks->setItem(row, 4, new QTableWidgetItem(tr("<not computed>")));
-
-    for (int i = 1; i <= 4; i++)
-      m_ui.tracks->item(row, i)->setTextAlignment(Qt::AlignCenter);
-
-    QTableWidgetItem* status = new QTableWidgetItem(QString());
-    status->setTextAlignment(Qt::AlignCenter);
-    m_ui.tracks->setItem(row, 5, status);
+    QTreeWidgetItem* row = new QTreeWidgetItem(m_ui.tracks);
+    row->setIcon(0, QIcon::fromTheme((mode == CDImage::TrackMode::Audio) ? QStringLiteral("file-music-line") :
+                                                                           QStringLiteral("disc-line")));
+    row->setText(0, tr("Track %1").arg(track));
+    row->setText(1, QString::fromUtf8(track_mode_strings[static_cast<u32>(mode)]));
+    row->setText(2, MSFToString(position));
+    row->setText(3, MSFToString(length));
+    row->setText(4, tr("<not computed>"));
+    row->setTextAlignment(5, Qt::AlignCenter);
   }
+}
+
+void GameSummaryWidget::disableWidgetsForRuntimeScannedEntry()
+{
+  m_ui.tracks->setEnabled(false);
+  m_ui.computeHashes->setEnabled(false);
+  m_ui.title->setReadOnly(true);
+  m_ui.restoreTitle->setEnabled(false);
+  m_ui.region->setEnabled(false);
+  m_ui.restoreRegion->setEnabled(false);
+  m_ui.languages->setReadOnly(true);
+  m_ui.customLanguage->setEnabled(false);
+  m_ui.revision->setText(tr("This game was not scanned by DuckStation. Some functionality is not available."));
+  m_ui.tracks->setVisible(false);
 }
 
 void GameSummaryWidget::onCompatibilityCommentsClicked()
 {
-  QDialog dlg(QtUtils::GetRootWidget(this));
-  dlg.resize(QSize(700, 400));
-  dlg.setWindowModality(Qt::WindowModal);
-  dlg.setWindowTitle(tr("Compatibility Report"));
+  QDialog* const dlg = new QDialog(QtUtils::GetRootWidget(this));
+  dlg->setAttribute(Qt::WA_DeleteOnClose);
+  dlg->resize(QSize(700, 400));
+  dlg->setWindowTitle(tr("Compatibility Report"));
 
-  QVBoxLayout* layout = new QVBoxLayout(&dlg);
+  QVBoxLayout* layout = new QVBoxLayout(dlg);
 
-  QTextBrowser* tb = new QTextBrowser(&dlg);
+  QTextBrowser* tb = new QTextBrowser(dlg);
   tb->setMarkdown(m_compatibility_comments);
   layout->addWidget(tb, 1);
 
-  QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
-  connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
+  QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
+  connect(bb, &QDialogButtonBox::rejected, dlg, &QDialog::accept);
   layout->addWidget(bb);
 
-  dlg.exec();
+  dlg->open();
 }
 
 void GameSummaryWidget::onInputProfileChanged(int index)
@@ -426,8 +404,7 @@ void GameSummaryWidget::onInputProfileChanged(int index)
         SettingsInterface* base_sif = Host::Internal::GetBaseSettingsLayer();
         InputManager::CopyConfiguration(sif, *base_sif, true, true, true, false);
 
-        QWidget* dlg_parent = QtUtils::GetRootWidget(this);
-        QMessageBox::information(dlg_parent, dlg_parent->windowTitle(),
+        QtUtils::AsyncMessageBox(this, QMessageBox::Information, QtUtils::GetRootWidget(this)->windowTitle(),
                                  tr("Per-game controller configuration initialized with global settings."));
       }
     }
@@ -469,153 +446,170 @@ void GameSummaryWidget::onComputeHashClicked()
     return;
   }
 
-  std::unique_ptr<CDImage> image = CDImage::Open(m_path.c_str(), false, nullptr);
+  m_ui.computeHashes->setEnabled(false);
+
+  QtAsyncTaskWithProgressDialog::create(this, TRANSLATE_SV("GameSummaryWidget", "Verifying Image"), {}, true, 1, 0,
+                                        0.0f, [this, path = m_path](ProgressCallback* progress) {
+                                          Error error;
+                                          CDImageHasher::TrackHashes track_hashes;
+                                          const bool result = computeImageHash(path, track_hashes, progress, &error);
+                                          const bool cancelled = (!result && progress->IsCancelled());
+                                          return [this, track_hashes = std::move(track_hashes),
+                                                  error = std::move(error), result, cancelled]() {
+                                            processHashResults(track_hashes, result, cancelled, error);
+                                          };
+                                        });
+}
+
+bool GameSummaryWidget::computeImageHash(const std::string& path, CDImageHasher::TrackHashes& track_hashes,
+                                         ProgressCallback* const progress, Error* const error) const
+{
+  std::unique_ptr<CDImage> image = CDImage::Open(m_path.c_str(), false, error);
   if (!image)
+    return false;
+
+  track_hashes.reserve(image->GetTrackCount());
+  progress->SetProgressRange(image->GetTrackCount());
+
+  for (u32 track = 0; track < image->GetTrackCount(); track++)
   {
-    QMessageBox::critical(QtUtils::GetRootWidget(this), tr("Error"), tr("Failed to open CD image for hashing."));
+    progress->SetProgressValue(track);
+    progress->PushState();
+
+    CDImageHasher::Hash hash;
+    if (!CDImageHasher::GetTrackHash(image.get(), static_cast<u8>(track + 1), &hash, progress, error))
+    {
+      progress->PopState();
+      return false;
+    }
+
+    track_hashes.emplace_back(hash);
+    progress->PopState();
+  }
+
+  return true;
+}
+
+void GameSummaryWidget::processHashResults(const CDImageHasher::TrackHashes& track_hashes, bool result, bool cancelled,
+                                           const Error& error)
+{
+  m_ui.computeHashes->setEnabled(true);
+
+  if (!result)
+  {
+    if (!cancelled)
+    {
+      QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Hash Calculation Failed"),
+                               QString::fromStdString(error.GetDescription()));
+    }
+
     return;
   }
 
-  QtModalProgressCallback progress_callback(this);
-  progress_callback.SetCancellable(true);
-  progress_callback.SetProgressRange(image->GetTrackCount());
-  progress_callback.MakeVisible();
-
-  std::vector<CDImageHasher::Hash> track_hashes;
-  track_hashes.reserve(image->GetTrackCount());
-
-  // Calculate hashes
-  bool calculate_hash_success = true;
-  for (u8 track = 1; track <= image->GetTrackCount(); track++)
-  {
-    progress_callback.SetProgressValue(track - 1);
-    progress_callback.PushState();
-
-    CDImageHasher::Hash hash;
-    if (!CDImageHasher::GetTrackHash(image.get(), track, &hash, &progress_callback))
-    {
-      progress_callback.PopState();
-
-      if (progress_callback.IsCancelled())
-        return;
-
-      calculate_hash_success = false;
-      break;
-    }
-    track_hashes.emplace_back(hash);
-
-    QTableWidgetItem* item = m_ui.tracks->item(track - 1, 4);
-    item->setText(QString::fromStdString(CDImageHasher::HashToString(hash)));
-
-    progress_callback.PopState();
-  }
-
   // Verify hashes against gamedb
-  std::vector<bool> verification_results(image->GetTrackCount(), false);
-  if (calculate_hash_success)
+  std::vector<bool> verification_results(track_hashes.size(), false);
+
+  std::string found_revision;
+  std::string found_serial;
+  m_redump_search_keyword = CDImageHasher::HashToString(track_hashes.front());
+
+  // Verification strategy used:
+  // 1. First, find all matches for the data track
+  //    If none are found, fail verification for all tracks
+  // 2. For each data track match, try to match all audio tracks
+  //    If all match, assume this revision. Else, try other revisions,
+  //    and accept the one with the most matches.
+  const GameDatabase::TrackHashesMap& hashes_map = GameDatabase::GetTrackHashesMap();
+
+  auto data_track_matches = hashes_map.equal_range(track_hashes[0]);
+  if (data_track_matches.first != data_track_matches.second)
   {
-    std::string found_revision;
-    std::string found_serial;
-    m_redump_search_keyword = CDImageHasher::HashToString(track_hashes.front());
-
-    progress_callback.SetStatusText(TRANSLATE("GameSummaryWidget", "Verifying hashes..."));
-    progress_callback.SetProgressValue(image->GetTrackCount());
-
-    // Verification strategy used:
-    // 1. First, find all matches for the data track
-    //    If none are found, fail verification for all tracks
-    // 2. For each data track match, try to match all audio tracks
-    //    If all match, assume this revision. Else, try other revisions,
-    //    and accept the one with the most matches.
-    const GameDatabase::TrackHashesMap& hashes_map = GameDatabase::GetTrackHashesMap();
-
-    auto data_track_matches = hashes_map.equal_range(track_hashes[0]);
-    if (data_track_matches.first != data_track_matches.second)
+    auto best_data_match = data_track_matches.second;
+    for (auto iter = data_track_matches.first; iter != data_track_matches.second; ++iter)
     {
-      auto best_data_match = data_track_matches.second;
-      for (auto iter = data_track_matches.first; iter != data_track_matches.second; ++iter)
+      std::vector<bool> current_verification_results(track_hashes.size(), false);
+      const auto& data_track_attribs = iter->second;
+      current_verification_results[0] = true; // Data track already matched
+
+      for (auto audio_tracks_iter = std::next(track_hashes.begin()); audio_tracks_iter != track_hashes.end();
+           ++audio_tracks_iter)
       {
-        std::vector<bool> current_verification_results(image->GetTrackCount(), false);
-        const auto& data_track_attribs = iter->second;
-        current_verification_results[0] = true; // Data track already matched
-
-        for (auto audio_tracks_iter = std::next(track_hashes.begin()); audio_tracks_iter != track_hashes.end();
-             ++audio_tracks_iter)
+        auto audio_track_matches = hashes_map.equal_range(*audio_tracks_iter);
+        for (auto audio_iter = audio_track_matches.first; audio_iter != audio_track_matches.second; ++audio_iter)
         {
-          auto audio_track_matches = hashes_map.equal_range(*audio_tracks_iter);
-          for (auto audio_iter = audio_track_matches.first; audio_iter != audio_track_matches.second; ++audio_iter)
+          // If audio track comes from the same revision and code as the data track, "pass" it
+          if (audio_iter->second == data_track_attribs)
           {
-            // If audio track comes from the same revision and code as the data track, "pass" it
-            if (audio_iter->second == data_track_attribs)
-            {
-              current_verification_results[std::distance(track_hashes.begin(), audio_tracks_iter)] = true;
-              break;
-            }
-          }
-        }
-
-        const auto old_matches_count = std::count(verification_results.begin(), verification_results.end(), true);
-        const auto new_matches_count =
-          std::count(current_verification_results.begin(), current_verification_results.end(), true);
-
-        if (new_matches_count > old_matches_count)
-        {
-          best_data_match = iter;
-          verification_results = current_verification_results;
-          // If all elements got matched, early out
-          if (new_matches_count >= static_cast<ptrdiff_t>(verification_results.size()))
-          {
+            current_verification_results[std::distance(track_hashes.begin(), audio_tracks_iter)] = true;
             break;
           }
         }
       }
 
-      found_revision = best_data_match->second.revision_str;
-      found_serial = best_data_match->second.serial;
-    }
+      const auto old_matches_count = std::count(verification_results.begin(), verification_results.end(), true);
+      const auto new_matches_count =
+        std::count(current_verification_results.begin(), current_verification_results.end(), true);
 
-    QString text;
-
-    if (!found_revision.empty())
-      text = tr("Revision: %1").arg(found_revision.empty() ? tr("N/A") : QString::fromStdString(found_revision));
-
-    if (found_serial != m_ui.serial->text().toStdString())
-    {
-      if (found_serial.empty())
+      if (new_matches_count > old_matches_count)
       {
-        text = tr("No known dump found that matches this hash.");
-      }
-      else
-      {
-        const QString mismatch_str =
-          tr("Serial Mismatch: %1 vs %2").arg(QString::fromStdString(found_serial)).arg(m_ui.serial->text());
-        if (!text.isEmpty())
-          text = QStringLiteral("%1 | %2").arg(mismatch_str).arg(text);
-        else
-          text = mismatch_str;
+        best_data_match = iter;
+        verification_results = current_verification_results;
+        // If all elements got matched, early out
+        if (new_matches_count >= static_cast<ptrdiff_t>(verification_results.size()))
+        {
+          break;
+        }
       }
     }
 
-    setRevisionText(text);
+    found_revision = best_data_match->second.revision_str;
+    found_serial = best_data_match->second.serial;
   }
 
-  for (u8 track = 0; track < image->GetTrackCount(); track++)
+  QString text;
+
+  if (!found_revision.empty())
+    text = tr("Revision: %1").arg(found_revision.empty() ? tr("N/A") : QString::fromStdString(found_revision));
+
+  if (found_serial != m_dialog->getGameSerial())
   {
-    QTableWidgetItem* hash_text = m_ui.tracks->item(track, 4);
-    QTableWidgetItem* status_text = m_ui.tracks->item(track, 5);
+    if (found_serial.empty())
+    {
+      text = tr("No known dump found that matches this hash.");
+    }
+    else
+    {
+      const QString mismatch_str = tr("Serial Mismatch: %1 vs %2")
+                                     .arg(QString::fromStdString(found_serial))
+                                     .arg(QString::fromStdString(m_dialog->getGameSerial()));
+      if (!text.isEmpty())
+        text = QStringLiteral("%1 | %2").arg(mismatch_str).arg(text);
+      else
+        text = mismatch_str;
+    }
+  }
+
+  m_ui.revision->setText(text);
+
+  // update in ui
+  for (size_t i = 0; i < track_hashes.size(); i++)
+  {
+    QTreeWidgetItem* const row = m_ui.tracks->topLevelItem(static_cast<int>(i));
+    row->setText(4, QString::fromStdString(CDImageHasher::HashToString(track_hashes[i])));
+
     QBrush brush;
-    if (verification_results[track])
+    if (verification_results[i])
     {
       brush = QColor(0, 200, 0);
-      status_text->setText(QString::fromUtf8(u8"\u2713"));
+      row->setText(5, QString::fromUtf8(u8"\u2713"));
     }
     else
     {
       brush = QColor(200, 0, 0);
-      status_text->setText(QString::fromUtf8(u8"\u2715"));
+      row->setText(5, QString::fromUtf8(u8"\u2715"));
     }
-    status_text->setForeground(brush);
-    hash_text->setForeground(brush);
+    row->setForeground(4, brush);
+    row->setForeground(5, brush);
   }
 
   if (!m_redump_search_keyword.empty())

@@ -6,7 +6,7 @@
 #include "common/types.h"
 
 inline constexpr u32 SAVE_STATE_MAGIC = 0x43435544;
-inline constexpr u32 SAVE_STATE_VERSION = 82;
+inline constexpr u32 SAVE_STATE_VERSION = 83;
 inline constexpr u32 SAVE_STATE_MINIMUM_VERSION = 42;
 
 static_assert(SAVE_STATE_VERSION >= SAVE_STATE_MINIMUM_VERSION);
@@ -26,6 +26,7 @@ struct SAVE_STATE_HEADER
     None = 0,
     Deflate = 1,
     Zstandard = 2,
+    XZ = 3,
   };
 
   u32 magic;

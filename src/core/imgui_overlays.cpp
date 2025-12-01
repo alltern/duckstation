@@ -7,7 +7,8 @@
 #include "controller.h"
 #include "cpu_core_private.h"
 #include "dma.h"
-#include "fullscreen_ui.h"
+#include "fullscreenui.h"
+#include "fullscreenui_widgets.h"
 #include "gpu.h"
 #include "gpu_backend.h"
 #include "gpu_thread.h"
@@ -21,7 +22,6 @@
 
 #include "util/gpu_device.h"
 #include "util/imgui_animated.h"
-#include "util/imgui_fullscreen.h"
 #include "util/imgui_manager.h"
 #include "util/input_manager.h"
 #include "util/media_capture.h"
@@ -34,6 +34,7 @@
 #include "common/path.h"
 #include "common/string_util.h"
 #include "common/thirdparty/SmallVector.h"
+#include "common/time_helpers.h"
 #include "common/timer.h"
 
 #include "IconsEmoji.h"
@@ -44,7 +45,6 @@
 
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <cmath>
 #include <deque>
 #include <mutex>
@@ -54,7 +54,7 @@ LOG_CHANNEL(ImGuiManager);
 
 namespace ImGuiManager {
 
-static constexpr float FIXED_BOLD_WEIGHT = 700.0f;
+static constexpr float FIXED_BOLD_WEIGHT = 800.0f;
 
 namespace {
 
@@ -69,7 +69,6 @@ struct InputOverlayState
     u8 slot;
     bool multitap;
     u32 icon_color;
-    float vibration_state[InputManager::MAX_MOTORS_PER_PAD];
     float bind_state[MAX_BINDS];
   };
 
@@ -235,7 +234,7 @@ void ImGuiManager::DestroyAllDebugWindows()
 void ImGuiManager::RenderTextOverlays(const GPUBackend* gpu)
 {
   // Don't draw anything with loading screen open, it'll be nonsensical.
-  if (ImGuiFullscreen::IsLoadingScreenOpen())
+  if (FullscreenUI::IsLoadingScreenOpen())
     return;
 
   const bool paused = GPUThread::IsSystemPaused();
@@ -368,6 +367,9 @@ static void DrawPerformanceStat(ImDrawList* dl, float& position_y, ImFont* font,
 void ImGuiManager::DrawPerformanceOverlay(const GPUBackend* gpu, float& position_y, float scale, float margin,
                                           float spacing)
 {
+#define BOLD(text) "\x02" text "\x01"
+#define COLOR(text) "\x04" text "\x03"
+
   if (!(g_gpu_settings.display_show_fps || g_gpu_settings.display_show_speed || g_gpu_settings.display_show_gpu_stats ||
         g_gpu_settings.display_show_resolution || g_gpu_settings.display_show_latency_stats ||
         g_gpu_settings.display_show_cpu_usage || g_gpu_settings.display_show_gpu_usage ||
@@ -391,17 +393,26 @@ void ImGuiManager::DrawPerformanceOverlay(const GPUBackend* gpu, float& position
   {
     const float speed = PerformanceCounters::GetEmulationSpeed();
     if (g_gpu_settings.display_show_fps)
-      text.append_format("\x02G: \x04{:.2f}\x03\x02 | V: \x01\x04{:.2f}\x03", PerformanceCounters::GetFPS(),
-                         PerformanceCounters::GetVPS());
+    {
+      const float fps = PerformanceCounters::GetFPS();
+      const float vps = PerformanceCounters::GetVPS();
+
+      if (vps < 100.0f)
+        text.append_format(COLOR("{:.2f}") " " BOLD("FPS") " | " COLOR("{:.2f}") " " BOLD("VPS"), fps, vps);
+      else if (vps < 1000.0f)
+        text.append_format(COLOR("{:.1f}") " " BOLD("FPS") " | " COLOR("{:.1f}") " " BOLD("VPS"), fps, vps);
+      else
+        text.append_format(COLOR("{:.0f}") " " BOLD("FPS") " | " COLOR("{:.0f}") " " BOLD("VPS"), fps, vps);
+    }
     if (g_gpu_settings.display_show_speed)
     {
-      text.append_format("\x02{}\x04{}% \x01\x03", text.empty() ? "" : " | ", static_cast<u32>(std::round(speed)));
+      text.append_format("{}" COLOR("{}%") " ", text.empty() ? "" : " | ", static_cast<u32>(std::round(speed)));
 
       const float target_speed = System::GetTargetSpeed();
       if (target_speed <= 0.0f)
-        text.append("(Max)");
+        text.append(BOLD("(Max)"));
       else
-        text.append_format("({:.0f}%)", target_speed * 100.0f);
+        text.append_format(BOLD("({:.0f}%)"), target_speed * 100.0f);
     }
     if (!text.empty())
     {
@@ -434,11 +445,15 @@ void ImGuiManager::DrawPerformanceOverlay(const GPUBackend* gpu, float& position
     if (g_gpu_settings.display_show_resolution)
     {
       const u32 resolution_scale = gpu->GetResolutionScale();
+      const bool pgxp = gpu->IsUsingHardwareBackend() && g_gpu_settings.gpu_pgxp_enable;
       const auto [display_width, display_height] = g_gpu.GetFullDisplayResolution(); // NOTE: Racey read.
       const bool interlaced = g_gpu.IsInterlacedDisplayEnabled();
+      const bool progressive_forced = g_gpu.IsProgressiveDisplayScanForced();
       const bool pal = g_gpu.IsInPALMode();
-      text.format("{}x{} {} {} [{}x]", display_width * resolution_scale, display_height * resolution_scale,
-                  pal ? "PAL" : "NTSC", interlaced ? "Interlaced" : "Progressive", resolution_scale);
+      text.format("{}x{} " BOLD("{} {}") " | {}x " BOLD("IR") "{}", display_width * resolution_scale,
+                  display_height * resolution_scale, pal ? "PAL" : "NTSC",
+                  interlaced ? "Interlaced" : (progressive_forced ? "Forced-Progressive" : "Progressive"),
+                  resolution_scale, pgxp ? " | " BOLD("PGXP") : "");
       DrawPerformanceStat(dl, position_y, fixed_font, fixed_font_size, FIXED_BOLD_WEIGHT, 0, shadow_offset, rbound,
                           text);
       position_y += spacing;
@@ -454,8 +469,9 @@ void ImGuiManager::DrawPerformanceOverlay(const GPUBackend* gpu, float& position
 
     if (g_gpu_settings.display_show_cpu_usage)
     {
-      text.format("{:.2f}ms | {:.2f}ms | {:.2f}ms", PerformanceCounters::GetMinimumFrameTime(),
-                  PerformanceCounters::GetAverageFrameTime(), PerformanceCounters::GetMaximumFrameTime());
+      text.format(" {:.2f}ms " BOLD("Min") " | {:.2f}ms " BOLD("Avg") " | {:.2f}ms " BOLD("Max"),
+                  PerformanceCounters::GetMinimumFrameTime(), PerformanceCounters::GetAverageFrameTime(),
+                  PerformanceCounters::GetMaximumFrameTime());
       DrawPerformanceStat(dl, position_y, fixed_font, fixed_font_size, FIXED_BOLD_WEIGHT, 0, shadow_offset, rbound,
                           text);
       position_y += spacing;
@@ -491,12 +507,11 @@ void ImGuiManager::DrawPerformanceOverlay(const GPUBackend* gpu, float& position
             text.append_format("{}{}", first ? "" : "/", "ME");
         }
 
-        text.append("]: \x01");
+        text.append("]:\x01 ");
       }
       else
       {
-        text.assign("\x02"
-                    "CPU: \x01");
+        text.assign(BOLD("CPU:") " ");
       }
       FormatProcessorStat(text, PerformanceCounters::GetCPUThreadUsage(),
                           PerformanceCounters::GetCPUThreadAverageTime());
@@ -506,7 +521,7 @@ void ImGuiManager::DrawPerformanceOverlay(const GPUBackend* gpu, float& position
 
       if (g_gpu_settings.gpu_use_thread)
       {
-        text.assign("\x02RNDR: \x01");
+        text.assign(BOLD("RNDR:") " ");
         FormatProcessorStat(text, PerformanceCounters::GetGPUThreadUsage(),
                             PerformanceCounters::GetGPUThreadAverageTime());
         DrawPerformanceStat(dl, position_y, fixed_font, fixed_font_size, FIXED_BOLD_WEIGHT, 0, shadow_offset, rbound,
@@ -517,8 +532,7 @@ void ImGuiManager::DrawPerformanceOverlay(const GPUBackend* gpu, float& position
 #ifndef __ANDROID__
       if (MediaCapture* cap = System::GetMediaCapture())
       {
-        text.assign("\x02"
-                    "CAP: \x01");
+        text.assign(BOLD("CAP:") " ");
         FormatProcessorStat(text, cap->GetCaptureThreadUsage(), cap->GetCaptureThreadTime());
         DrawPerformanceStat(dl, position_y, fixed_font, fixed_font_size, FIXED_BOLD_WEIGHT, 0, shadow_offset, rbound,
                             text);
@@ -529,7 +543,7 @@ void ImGuiManager::DrawPerformanceOverlay(const GPUBackend* gpu, float& position
 
     if (g_gpu_settings.display_show_gpu_usage && g_gpu_device->IsGPUTimingEnabled())
     {
-      text.assign("\x02GPU: \x01");
+      text.assign(BOLD("GPU:") " ");
       FormatProcessorStat(text, PerformanceCounters::GetGPUUsage(), PerformanceCounters::GetGPUAverageTime());
       DrawPerformanceStat(dl, position_y, fixed_font, fixed_font_size, FIXED_BOLD_WEIGHT, 0, shadow_offset, rbound,
                           text);
@@ -550,6 +564,11 @@ void ImGuiManager::DrawPerformanceOverlay(const GPUBackend* gpu, float& position
     SetStatusIndicatorIcons(text, true);
     DrawPerformanceStat(dl, position_y, ui_font, status_size, 0.0f, 0, shadow_offset, rbound, text);
   }
+
+#undef UNCOLOR
+#undef COLOR
+#undef UNBOLD
+#undef BOLD
 }
 
 void ImGuiManager::DrawEnhancementsOverlay(const GPUBackend* gpu)
@@ -562,11 +581,11 @@ void ImGuiManager::DrawEnhancementsOverlay(const GPUBackend* gpu)
   if (g_settings.rewind_enable)
     text.append_format(" RW={}/{}", g_settings.rewind_save_frequency, g_settings.rewind_save_slots);
   if (g_settings.IsRunaheadEnabled())
-    text.append_format(" RA={}", g_settings.runahead_frames);
+    text.append_format(" RA={}{}", g_settings.runahead_frames, g_settings.runahead_for_analog_input ? "+A" : "");
 
   if (g_settings.cpu_overclock_active)
     text.append_format(" CPU={}%", g_settings.GetCPUOverclockPercent());
-  if (g_settings.enable_8mb_ram)
+  if (g_settings.cpu_enable_8mb_ram)
     text.append(" 8MB");
   if (g_settings.cdrom_read_speedup != 1)
     text.append_format(" CDR={}x", g_settings.cdrom_read_speedup);
@@ -598,8 +617,8 @@ void ImGuiManager::DrawEnhancementsOverlay(const GPUBackend* gpu)
       text.append_format(" {}", Settings::GetTextureFilterName(g_gpu_settings.gpu_texture_filter));
     }
   }
-  if (g_settings.gpu_widescreen_hack && g_settings.display_aspect_ratio != DisplayAspectRatio::Auto &&
-      g_settings.display_aspect_ratio != DisplayAspectRatio::R4_3)
+  if (g_settings.gpu_widescreen_hack && g_settings.display_aspect_ratio != DisplayAspectRatio::Auto() &&
+      g_settings.display_aspect_ratio != DisplayAspectRatio{4, 3})
   {
     text.append(" WSHack");
   }
@@ -684,27 +703,29 @@ void ImGuiManager::DrawMediaCaptureOverlay(float& position_y, float scale, float
 
 void ImGuiManager::DrawFrameTimeOverlay(float& position_y, float scale, float margin, float spacing)
 {
-  const float shadow_offset = std::ceil(1.0f * scale);
-  ImFont* fixed_font = ImGuiManager::GetFixedFont();
-  const float fixed_font_size = ImGuiManager::GetFixedFontSize();
-  const float fixed_font_weight = 0.0f;
+  constexpr ImU32 text_color = IM_COL32(240, 240, 240, 255);
+  constexpr ImU32 line_color = IM_COL32(240, 240, 240, 255);
+  const float shadow_offset = OSDScale(1.0f);
+  ImFont* const fixed_font = GetFixedFont();
+  const float fixed_font_size = OSDScale(13.0f);
+  constexpr float fixed_font_weight = FIXED_BOLD_WEIGHT;
 
-  const ImVec2 history_size(ImCeil(200.0f * scale), ImCeil(50.0f * scale));
-  ImGui::SetNextWindowSize(ImVec2(history_size.x, history_size.y));
-  ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - margin - history_size.x, position_y));
+  const ImVec2 window_padding = ImVec2(OSDScale(8.0f), OSDScale(4.0f));
+  const ImVec2 window_size = ImVec2(OSDScale(200.0f), OSDScale(40.0f));
+  const ImVec2 padded_window_size = window_size + (window_padding * 2.0f);
+  ImGui::SetNextWindowSize(padded_window_size);
+  ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - margin - padded_window_size.x, position_y));
   ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.25f));
   ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-  ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+  ImGui::PushStyleColor(ImGuiCol_PlotLines, line_color);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, OSDScale(8.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, window_padding);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
   ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
   if (ImGui::Begin("##frame_times", nullptr,
                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing))
   {
-    ImGui::PushFont(fixed_font, fixed_font_size, fixed_font_weight);
-
     // LLVM likes to unroll this... whatever.
     float min, max;
     {
@@ -738,37 +759,36 @@ void ImGuiManager::DrawFrameTimeOverlay(float& position_y, float scale, float ma
         return PerformanceCounters::GetFrameTimeHistory()[((PerformanceCounters::GetFrameTimeHistoryPos() + idx) %
                                                            PerformanceCounters::NUM_FRAME_TIME_SAMPLES)];
       },
-      nullptr, PerformanceCounters::NUM_FRAME_TIME_SAMPLES, 0, nullptr, min, max, history_size);
+      nullptr, PerformanceCounters::NUM_FRAME_TIME_SAMPLES, 0, nullptr, min, max, window_size);
 
-    ImDrawList* win_dl = ImGui::GetCurrentWindow()->DrawList;
-    const ImVec2 wpos(ImGui::GetCurrentWindow()->Pos);
+    ImGuiWindow* const win = ImGui::GetCurrentWindow();
+    ImDrawList* const win_dl = win->DrawList;
 
     TinyString text;
-    text.format("{:.1f} ms", max);
-    ImVec2 text_size = fixed_font->CalcTextSizeA(fixed_font_size, -1.0f, FLT_MAX, 0.0f, text.c_str(), text.end_ptr());
-    win_dl->AddText(ImVec2(wpos.x + history_size.x - text_size.x - spacing + shadow_offset, wpos.y + shadow_offset),
-                    IM_COL32(0, 0, 0, 100), text.c_str(), text.end_ptr());
-    win_dl->AddText(ImVec2(wpos.x + history_size.x - text_size.x - spacing, wpos.y), IM_COL32(255, 255, 255, 255),
-                    text.c_str(), text.end_ptr());
+    text.format("{:.0f} ms", max);
+    ImVec2 text_size = fixed_font->CalcTextSizeA(fixed_font_size, -1.0f, FLT_MAX, 0.0f, IMSTR_START_END(text));
+    FullscreenUI::RenderShadowedTextClipped(win_dl, fixed_font, fixed_font_size, fixed_font_weight, win->WorkRect.Min,
+                                            win->WorkRect.Max, text_color, text, &text_size, ImVec2(1.0f, 0.0f), 0.0f,
+                                            &win->WorkRect, shadow_offset);
 
-    text.format("{:.1f} ms", min);
+    text.format("{:.0f} ms", min);
     text_size = fixed_font->CalcTextSizeA(fixed_font_size, -1.0f, FLT_MAX, 0.0f, text.c_str(), text.end_ptr());
-    win_dl->AddText(ImVec2(wpos.x + history_size.x - text_size.x - spacing + shadow_offset,
-                           wpos.y + history_size.y - fixed_font_size + shadow_offset),
-                    IM_COL32(0, 0, 0, 100), text.c_str(), text.end_ptr());
-    win_dl->AddText(ImVec2(wpos.x + history_size.x - text_size.x - spacing, wpos.y + history_size.y - fixed_font_size),
-                    IM_COL32(255, 255, 255, 255), text.c_str(), text.end_ptr());
-    ImGui::PopFont();
+    FullscreenUI::RenderShadowedTextClipped(win_dl, fixed_font, fixed_font_size, fixed_font_weight, win->WorkRect.Min,
+                                            win->WorkRect.Max, text_color, text, &text_size, ImVec2(1.0f, 1.0f), 0.0f,
+                                            &win->WorkRect, shadow_offset);
   }
   ImGui::End();
   ImGui::PopStyleVar(5);
   ImGui::PopStyleColor(3);
 
-  position_y += history_size.y + spacing;
+  position_y += window_size.y + spacing;
 }
 
 void ImGuiManager::UpdateInputOverlay()
 {
+  static constexpr u32 NORMAL_ICON_COLOR = 0xFFCCCCCCu;
+  static constexpr u32 ALTERNATE_ICON_COLOR = 0xFF2534F0u;
+
   u32 num_active_pads = 0;
   for (u32 port = 0; port < NUM_CONTROLLER_AND_CARD_PORTS; port++)
   {
@@ -798,7 +818,7 @@ void ImGuiManager::UpdateInputOverlay()
     pstate.slot = Truncate8(slot);
     pstate.multitap = multitap;
     pstate.ctype = ctype;
-    pstate.icon_color = controller->GetInputOverlayIconColor();
+    pstate.icon_color = NORMAL_ICON_COLOR;
 
     const Controller::ControllerInfo& cinfo = Controller::GetControllerInfo(ctype);
     for (const Controller::ControllerBindingInfo& bi : cinfo.bindings)
@@ -806,15 +826,18 @@ void ImGuiManager::UpdateInputOverlay()
       const u32 bidx = bi.bind_index;
 
       // this will leave some uninitalized, but who cares, it won't be read on the other side
-      if (bi.type >= InputBindingInfo::Type::Button && bi.type <= InputBindingInfo::Type::HalfAxis)
+      if (bi.type >= InputBindingInfo::Type::Button && bi.type <= InputBindingInfo::Type::Motor)
       {
         DebugAssert(bidx < InputOverlayState::MAX_BINDS);
         pstate.bind_state[bidx] = controller->GetBindState(bidx);
       }
-      else if (bi.type == InputBindingInfo::Type::Motor)
+      else if (bi.type == InputBindingInfo::Type::LED)
       {
-        DebugAssert(bidx < InputManager::MAX_MOTORS_PER_PAD);
-        pstate.vibration_state[bidx] = controller->GetVibrationMotorState(bidx);
+        const float intensity = controller->GetBindState(bidx);
+        pstate.icon_color = (GSVector4::cxpr_rgba32(NORMAL_ICON_COLOR) + (GSVector4::cxpr_rgba32(ALTERNATE_ICON_COLOR) -
+                                                                          GSVector4::cxpr_rgba32(NORMAL_ICON_COLOR)) *
+                                                                           GSVector4(intensity))
+                              .rgba32();
       }
     }
   }
@@ -895,7 +918,7 @@ void ImGuiManager::DrawInputsOverlay()
       }
       else if (bi.type == InputBindingInfo::Type::Motor)
       {
-        const float value = pstate.vibration_state[bi.bind_index];
+        const float value = pstate.bind_state[bi.bind_index];
         if (value >= 1.0f)
           text.append_format(" {}", bi.icon_name ? bi.icon_name : bi.name);
         else if (value > 0.0f)
@@ -933,14 +956,13 @@ static void DestroyTextures();
 static void RefreshHotkeyLegend();
 static void Draw();
 static void ShowSlotOSDMessage();
-static std::string GetCurrentSlotPath();
 
 static constexpr const char* DATE_TIME_FORMAT =
   TRANSLATE_NOOP("SaveStateSelectorUI", "Saved at {0:%H:%M} on {0:%a} {0:%Y/%m/%d}.");
 
 namespace {
 
-struct ALIGN_TO_CACHE_LINE State
+struct State
 {
   std::shared_ptr<GPUTexture> placeholder_texture;
 
@@ -964,7 +986,7 @@ struct ALIGN_TO_CACHE_LINE State
 
 } // namespace
 
-static State s_state;
+ALIGN_TO_CACHE_LINE static State s_state;
 
 } // namespace SaveStateSelectorUI
 
@@ -982,7 +1004,7 @@ void SaveStateSelectorUI::Open(float open_time /* = DEFAULT_OPEN_TIME */)
     return;
 
   if (!s_state.placeholder_texture)
-    s_state.placeholder_texture = ImGuiFullscreen::LoadTexture("no-save.png");
+    s_state.placeholder_texture = FullscreenUI::LoadTexture("no-save.png");
 
   s_state.is_open = true;
   RefreshList();
@@ -1088,8 +1110,8 @@ void SaveStateSelectorUI::DestroyTextures()
 void SaveStateSelectorUI::RefreshHotkeyLegend()
 {
   auto format_legend_entry = [](SmallString binding, std::string_view caption) {
-    InputManager::PrettifyInputBinding(binding, &ImGuiFullscreen::GetControllerIconMapping);
-    return fmt::format("{} - {}", binding, caption);
+    InputManager::PrettifyInputBinding(binding, &FullscreenUI::GetControllerIconMapping);
+    return fmt::format("{} {}", binding, caption);
   };
 
   s_state.load_legend = format_legend_entry(Host::GetSmallStringSettingValue("Hotkeys", "LoadSelectedSaveState"),
@@ -1157,7 +1179,8 @@ void SaveStateSelectorUI::InitializeListEntry(ListEntry* li, ExtendedSaveStateIn
   if (global)
     li->game_details = fmt::format(TRANSLATE_FS("SaveStateSelectorUI", "{} ({})"), ssi->title, ssi->serial);
 
-  li->summary = fmt::format(TRANSLATE_FS("SaveStateSelectorUI", DATE_TIME_FORMAT), fmt::localtime(ssi->timestamp));
+  li->summary = fmt::format(TRANSLATE_FS("SaveStateSelectorUI", DATE_TIME_FORMAT),
+                            Common::LocalTime(static_cast<std::time_t>(ssi->timestamp)).value_or(std::tm{}));
   li->filename = Path::GetFileName(path);
   li->slot = slot;
   li->global = global;
@@ -1187,26 +1210,28 @@ void SaveStateSelectorUI::InitializePlaceholderListEntry(ListEntry* li, const st
 
 void SaveStateSelectorUI::Draw()
 {
-  using ImGuiFullscreen::DarkerColor;
-  using ImGuiFullscreen::UIStyle;
+  using FullscreenUI::DarkerColor;
+  using FullscreenUI::LayoutScale;
+  using FullscreenUI::UIStyle;
 
   static constexpr float SCROLL_ANIMATION_TIME = 0.25f;
   static constexpr float BG_ANIMATION_TIME = 0.15f;
 
   const auto& io = ImGui::GetIO();
-  const float scale = ImGuiManager::GetGlobalScale();
-  const float width = (640.0f * scale);
-  const float height = (450.0f * scale);
+  const float width = LayoutScale(640.0f);
+  const float height = LayoutScale(480.0f);
 
-  const float padding_and_rounding = 18.0f * scale;
+  const float padding_and_rounding = LayoutScale(18.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, padding_and_rounding);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(padding_and_rounding, padding_and_rounding));
-  ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, LayoutScale(14.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, LayoutScale(10.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, LayoutScale(8.0f, 4.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, LayoutScale(4.0f, 2.0f));
   ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, UIStyle.PrimaryColor);
   ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, UIStyle.BackgroundColor);
   ImGui::PushStyleColor(ImGuiCol_WindowBg, DarkerColor(UIStyle.PopupBackgroundColor));
   ImGui::PushStyleColor(ImGuiCol_Text, UIStyle.BackgroundTextColor);
-  ImGui::PushFont(ImGuiManager::GetTextFont(), ImGuiManager::GetOSDFontSize(), 0.0f);
   ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_Always);
   ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always,
                           ImVec2(0.5f, 0.5f));
@@ -1216,8 +1241,10 @@ void SaveStateSelectorUI::Draw()
                      ImGuiWindowFlags_NoScrollbar))
   {
     // Leave 2 lines for the legend
-    const float legend_margin = ImGui::GetFontSize() * 2.0f + ImGui::GetStyle().ItemSpacing.y * 3.0f;
-    const float padding = 12.0f * scale;
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float padding = LayoutScale(12.0f);
+    const float legend_margin =
+      UIStyle.MediumFontSize * 2.0f + padding + style.ItemSpacing.y * 2.0f + style.CellPadding.y * 2.0f;
 
     ImGui::BeginChild("##item_list", ImVec2(0, -legend_margin), false,
                       ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoTitleBar |
@@ -1225,8 +1252,8 @@ void SaveStateSelectorUI::Draw()
     {
       const s32 current_slot = GetCurrentSlot();
       const bool current_slot_global = IsCurrentSlotGlobal();
-      const ImVec2 image_size = ImVec2(128.0f * scale, (128.0f / (4.0f / 3.0f)) * scale);
-      const float item_width = std::floor(width - (padding_and_rounding * 2.0f) - ImGui::GetStyle().ScrollbarSize);
+      const ImVec2 image_size = LayoutScale(128.0f, (128.0f / (4.0f / 3.0f)));
+      const float item_width = std::floor(width - (padding_and_rounding * 2.0f) - style.ScrollbarSize);
       const float item_height = std::floor(image_size.y + padding * 2.0f);
       const float text_indent = image_size.x + padding + padding;
 
@@ -1291,17 +1318,27 @@ void SaveStateSelectorUI::Draw()
 
         ImGui::Indent(text_indent);
 
+        ImGui::PushFont(ImGuiManager::GetTextFont(), UIStyle.MediumLargeFontSize, UIStyle.BoldFontWeight);
+
         ImGui::TextUnformatted(TinyString::from_format(entry.global ?
                                                          TRANSLATE_FS("SaveStateSelectorUI", "Global Slot {}") :
                                                          TRANSLATE_FS("SaveStateSelectorUI", "Game Slot {}"),
                                                        entry.slot)
                                  .c_str());
-        if (entry.global)
-          ImGui::TextUnformatted(entry.game_details.c_str(), entry.game_details.c_str() + entry.game_details.length());
-        ImGui::TextUnformatted(entry.summary.c_str(), entry.summary.c_str() + entry.summary.length());
-        ImGui::PushFont(ImGuiManager::GetFixedFont(), 0.0f, 0.0f);
-        ImGui::TextUnformatted(entry.filename.data(), entry.filename.data() + entry.filename.length());
         ImGui::PopFont();
+
+        ImGui::PushFont(ImGuiManager::GetTextFont(), UIStyle.MediumFontSize, UIStyle.NormalFontWeight);
+        ImGui::PushStyleColor(ImGuiCol_Text, FullscreenUI::DarkerColor(style.Colors[ImGuiCol_Text]));
+
+        if (entry.global)
+          ImGui::TextUnformatted(IMSTR_START_END(entry.game_details));
+
+        ImGui::TextUnformatted(IMSTR_START_END(entry.summary));
+
+        ImGui::PushStyleColor(ImGuiCol_Text, FullscreenUI::DarkerColor(style.Colors[ImGuiCol_Text]));
+        ImGui::TextUnformatted(IMSTR_START_END(entry.filename));
+        ImGui::PopFont();
+        ImGui::PopStyleColor(2);
 
         ImGui::Unindent(text_indent);
         ImGui::SetCursorPosY(y_start);
@@ -1315,10 +1352,13 @@ void SaveStateSelectorUI::Draw()
     }
     ImGui::EndChild();
 
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padding);
+
     ImGui::BeginChild("##legend", ImVec2(0, 0), false,
                       ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoTitleBar |
                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
     {
+      ImGui::PushFont(ImGuiManager::GetTextFont(), UIStyle.MediumFontSize, UIStyle.BoldFontWeight);
       ImGui::SetCursorPosX(padding);
       if (ImGui::BeginTable("table", 2))
       {
@@ -1333,13 +1373,13 @@ void SaveStateSelectorUI::Draw()
 
         ImGui::EndTable();
       }
+      ImGui::PopFont();
     }
     ImGui::EndChild();
   }
   ImGui::End();
 
-  ImGui::PopFont();
-  ImGui::PopStyleVar(3);
+  ImGui::PopStyleVar(6);
   ImGui::PopStyleColor(4);
 
   // auto-close
@@ -1366,90 +1406,47 @@ bool SaveStateSelectorUI::IsCurrentSlotGlobal()
   return s_state.current_slot_global;
 }
 
-std::string SaveStateSelectorUI::GetCurrentSlotPath()
-{
-  std::string filename;
-  if (!s_state.current_slot_global)
-  {
-    if (const std::string& serial = GPUThread::GetGameSerial(); !serial.empty())
-      filename = System::GetGameSaveStatePath(serial, s_state.current_slot + 1);
-  }
-  else
-  {
-    filename = System::GetGlobalSaveStatePath(s_state.current_slot + 1);
-  }
-
-  return filename;
-}
-
 void SaveStateSelectorUI::LoadCurrentSlot()
 {
   DebugAssert(GPUThread::IsOnThread());
 
-  if (std::string path = GetCurrentSlotPath(); !path.empty())
-  {
-    if (FileSystem::FileExists(path.c_str()))
-    {
-      Host::RunOnCPUThread([path = std::move(path)]() {
-        Error error;
-        if (!System::LoadState(path.c_str(), &error, true, false))
-        {
-          Host::AddKeyedOSDMessage("LoadState",
-                                   fmt::format(TRANSLATE_FS("OSDMessage", "Failed to load state from slot {0}:\n{1}"),
-                                               GetCurrentSlot(), error.GetDescription()),
-                                   Host::OSD_ERROR_DURATION);
-        }
-      });
-    }
-    else
-    {
-      Host::AddIconOSDMessage(
-        "LoadState", ICON_EMOJI_FLOPPY_DISK,
-        IsCurrentSlotGlobal() ?
-          fmt::format(TRANSLATE_FS("SaveStateSelectorUI", "No save state found in Global Slot {}."), GetCurrentSlot()) :
-          fmt::format(TRANSLATE_FS("SaveStateSelectorUI", "No save state found in Slot {}."), GetCurrentSlot()),
-        Host::OSD_INFO_DURATION);
-    }
-  }
+  Host::RunOnCPUThread(
+    [global = IsCurrentSlotGlobal(), slot = GetCurrentSlot()]() { System::LoadStateFromSlot(global, slot); });
 
   Close();
 }
 
 void SaveStateSelectorUI::SaveCurrentSlot()
 {
-  if (std::string path = GetCurrentSlotPath(); !path.empty())
-  {
-    Host::RunOnCPUThread([path = std::move(path)]() {
-      Error error;
-      if (!System::SaveState(std::move(path), &error, g_settings.create_save_state_backups, false))
-      {
-        Host::AddIconOSDMessage("SaveState", ICON_EMOJI_WARNING,
-                                fmt::format(TRANSLATE_FS("OSDMessage", "Failed to save state to slot {0}:\n{1}"),
-                                            GetCurrentSlot(), error.GetDescription()),
-                                Host::OSD_ERROR_DURATION);
-      }
-    });
-  }
+  Host::RunOnCPUThread(
+    [global = IsCurrentSlotGlobal(), slot = GetCurrentSlot()]() { System::SaveStateToSlot(global, slot); });
 
   Close();
 }
 
 void SaveStateSelectorUI::ShowSlotOSDMessage()
 {
-  const std::string path = GetCurrentSlotPath();
+  const std::string path = IsCurrentSlotGlobal() ?
+                             System::GetGlobalSaveStatePath(GetCurrentSlot()) :
+                             System::GetGameSaveStatePath(GPUThread::GetGameSerial(), GetCurrentSlot());
   FILESYSTEM_STAT_DATA sd;
   std::string date;
   if (!path.empty() && FileSystem::StatFile(path.c_str(), &sd))
-    date = fmt::format(TRANSLATE_FS("SaveStateSelectorUI", DATE_TIME_FORMAT), fmt::localtime(sd.ModificationTime));
+  {
+    date = fmt::format(TRANSLATE_FS("SaveStateSelectorUI", DATE_TIME_FORMAT),
+                       Common::LocalTime(sd.ModificationTime).value_or(std::tm{}));
+  }
   else
-    date = TRANSLATE_STR("SaveStateSelectorUI", "no save yet");
+  {
+    date = TRANSLATE_STR("SaveStateSelectorUI", "No save in this slot.");
+  }
 
   Host::AddIconOSDMessage(
-    "ShowSlotOSDMessage", ICON_EMOJI_MAGNIFIYING_GLASS_TILTED_LEFT,
+    OSDMessageType::Quick, "ShowSlotOSDMessage", ICON_EMOJI_MAGNIFIYING_GLASS_TILTED_LEFT,
     IsCurrentSlotGlobal() ?
-      fmt::format(TRANSLATE_FS("SaveStateSelectorUI", "Global Save Slot {0} selected ({1})."), GetCurrentSlot(), date) :
-      fmt::format(TRANSLATE_FS("SaveStateSelectorUI", "Save Slot {0} selected ({1})."), GetCurrentSlot(), date),
-    Host::OSD_QUICK_DURATION);
+      fmt::format(TRANSLATE_FS("SaveStateSelectorUI", "Global Save Slot {} selected."), GetCurrentSlot()) :
+      fmt::format(TRANSLATE_FS("SaveStateSelectorUI", "Save Slot {0} selected."), GetCurrentSlot()),
+    std::move(date));
 }
 
 void ImGuiManager::RenderOverlayWindows()

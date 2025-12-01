@@ -27,18 +27,19 @@ public:
   ReShadeFXShader();
   ~ReShadeFXShader();
 
-  bool IsValid() const override;
-  bool WantsDepthBuffer() const override;
-
   bool LoadFromFile(std::string name, std::string filename, bool only_config, Error* error);
   bool LoadFromString(std::string name, std::string filename, std::string code, bool only_config, Error* error);
 
-  bool ResizeOutput(GPUTexture::Format format, u32 width, u32 height, Error* error) override;
+  bool ResizeTargets(u32 source_width, u32 source_height, GPUTexture::Format target_format, u32 target_width,
+                     u32 target_height, u32 viewport_width, u32 viewport_height, Error* error) override;
+
   bool CompilePipeline(GPUTexture::Format format, u32 width, u32 height, Error* error,
                        ProgressCallback* progress) override;
-  GPUDevice::PresentResult Apply(GPUTexture* input_color, GPUTexture* input_depth, GPUTexture* final_target,
-                                 GSVector4i final_rect, s32 orig_width, s32 orig_height, s32 native_width,
-                                 s32 native_height, u32 target_width, u32 target_height, float time) override;
+
+  GPUDevice::PresentResult Apply(GPUTexture* original_color, GPUTexture* input_color, GPUTexture* input_depth,
+                                 GPUTexture* final_target, GSVector4i final_rect, s32 orig_width, s32 orig_height,
+                                 s32 native_width, s32 native_height, u32 target_width, u32 target_height,
+                                 float time) override;
 
 private:
   using TextureID = s32;
@@ -149,11 +150,9 @@ private:
   std::vector<Texture> m_textures;
   std::vector<SourceOption> m_source_options;
   u32 m_uniforms_size = 0;
-  bool m_valid = false;
-  bool m_wants_depth_buffer = false;
 
-  Timer m_frame_timer;
   u32 m_frame_count = 0;
+  Timer m_frame_timer;
 
   // Specifically using a fixed seed, so that it's consistent from run-to-run.
   std::mt19937 m_random{0x1337};

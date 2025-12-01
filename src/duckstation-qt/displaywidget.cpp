@@ -6,7 +6,7 @@
 #include "qthost.h"
 #include "qtutils.h"
 
-#include "core/fullscreen_ui.h"
+#include "core/fullscreenui.h"
 
 #include "util/imgui_manager.h"
 
@@ -49,25 +49,12 @@ DisplayWidget::DisplayWidget(QWidget* parent) : QWidget(parent)
 
 DisplayWidget::~DisplayWidget() = default;
 
-int DisplayWidget::scaledWindowWidth() const
-{
-  return std::max(
-    static_cast<int>(std::ceil(static_cast<qreal>(width()) * QtUtils::GetDevicePixelRatioForWidget(this))), 1);
-}
-
-int DisplayWidget::scaledWindowHeight() const
-{
-  return std::max(
-    static_cast<int>(std::ceil(static_cast<qreal>(height()) * QtUtils::GetDevicePixelRatioForWidget(this))), 1);
-}
-
 std::optional<WindowInfo> DisplayWidget::getWindowInfo(RenderAPI render_api, Error* error)
 {
   std::optional<WindowInfo> ret = QtUtils::GetWindowInfoForWidget(this, render_api, error);
   if (ret.has_value())
   {
-    m_last_window_width = ret->surface_width;
-    m_last_window_height = ret->surface_height;
+    m_last_window_size = QSize(ret->surface_width, ret->surface_height);
     m_last_window_scale = ret->surface_scale;
   }
   return ret;
@@ -141,13 +128,12 @@ void DisplayWidget::handleCloseEvent(QCloseEvent* event)
   // rather than just the game.
   if ((QtHost::IsSystemValidOrStarting() || QtHost::IsFullscreenUIStarted()) && !isActuallyFullscreen())
   {
-    QMetaObject::invokeMethod(g_main_window, "requestShutdown", Qt::QueuedConnection, Q_ARG(bool, true),
-                              Q_ARG(bool, true), Q_ARG(bool, false), Q_ARG(bool, true), Q_ARG(bool, true),
-                              Q_ARG(bool, true), Q_ARG(bool, false));
+    QMetaObject::invokeMethod(g_main_window, &MainWindow::requestShutdown, Qt::QueuedConnection, true, true, false,
+                              true, true, true, false);
   }
   else
   {
-    QMetaObject::invokeMethod(g_main_window, "requestExit", Qt::QueuedConnection);
+    QMetaObject::invokeMethod(g_main_window, &MainWindow::requestExit, Qt::QueuedConnection, true);
   }
 }
 
@@ -175,6 +161,22 @@ bool DisplayWidget::isActuallyFullscreen() const
   // I hate you QtWayland... have to check the parent, not ourselves.
   QWidget* container = qobject_cast<QWidget*>(parent());
   return container ? container->isFullScreen() : isFullScreen();
+}
+
+void DisplayWidget::checkForSizeChange()
+{
+  // avoid spamming resize events for paint events (sent on move on windows)
+  const auto& [size, dpr] = QtUtils::GetPixelSizeForWidget(this);
+  if (m_last_window_size != size || m_last_window_scale != dpr)
+  {
+    DEV_LOG("Display widget resized to {}x{} (Qt {}x{}) DPR={}", size.width(), size.height(), width(), height(), dpr);
+
+    m_last_window_size = size;
+    m_last_window_scale = dpr;
+    emit windowResizedEvent(size.width(), size.height(), static_cast<float>(dpr));
+  }
+
+  updateCenterPos();
 }
 
 void DisplayWidget::updateCenterPos()
@@ -242,10 +244,10 @@ bool DisplayWidget::event(QEvent* event)
       // but I can't think of a better way of handling it, and there doesn't appear to be
       // any window flag which changes this behavior that I can see.
 
-      const u32 key = QtUtils::KeyEventToCode(key_event);
       const Qt::KeyboardModifiers modifiers = key_event->modifiers();
       const bool pressed = (key_event->type() == QEvent::KeyPress);
-      const auto it = std::find(m_keys_pressed_with_modifiers.begin(), m_keys_pressed_with_modifiers.end(), key);
+      const auto it =
+        std::find(m_keys_pressed_with_modifiers.begin(), m_keys_pressed_with_modifiers.end(), key_event->key());
       if (it != m_keys_pressed_with_modifiers.end())
       {
         if (pressed)
@@ -255,10 +257,12 @@ bool DisplayWidget::event(QEvent* event)
       }
       else if (modifiers != Qt::NoModifier && modifiers != Qt::KeypadModifier && pressed)
       {
-        m_keys_pressed_with_modifiers.push_back(key);
+        m_keys_pressed_with_modifiers.push_back(key_event->key());
       }
 
-      emit windowKeyEvent(key, pressed);
+      if (const std::optional<u32> key = QtUtils::KeyEventToCode(key_event))
+        emit windowKeyEvent(key.value(), pressed);
+
       return true;
     }
 
@@ -266,11 +270,9 @@ bool DisplayWidget::event(QEvent* event)
     {
       if (!m_relative_mouse_enabled)
       {
-        const qreal dpr = QtUtils::GetDevicePixelRatioForWidget(this);
         const QPoint mouse_pos = static_cast<QMouseEvent*>(event)->pos();
-
-        const float scaled_x = static_cast<float>(static_cast<qreal>(mouse_pos.x()) * dpr);
-        const float scaled_y = static_cast<float>(static_cast<qreal>(mouse_pos.y()) * dpr);
+        const float scaled_x = static_cast<float>(static_cast<qreal>(mouse_pos.x()) * m_last_window_scale);
+        const float scaled_y = static_cast<float>(static_cast<qreal>(mouse_pos.y()) * m_last_window_scale);
         InputManager::UpdatePointerAbsolutePosition(0, scaled_x, scaled_y);
       }
       else
@@ -356,34 +358,19 @@ bool DisplayWidget::event(QEvent* event)
       return true;
     }
 
-      // According to https://bugreports.qt.io/browse/QTBUG-95925 the recommended practice for handling DPI change is
-      // responding to paint events
-    case QEvent::Paint:
     case QEvent::Resize:
+    case QEvent::DevicePixelRatioChange:
     {
       QWidget::event(event);
 
-      const float dpr = QtUtils::GetDevicePixelRatioForWidget(this);
-      const u32 scaled_width =
-        static_cast<u32>(std::max(static_cast<int>(std::ceil(static_cast<qreal>(width()) * dpr)), 1));
-      const u32 scaled_height =
-        static_cast<u32>(std::max(static_cast<int>(std::ceil(static_cast<qreal>(height()) * dpr)), 1));
-
-      // avoid spamming resize events for paint events (sent on move on windows)
-      if (m_last_window_width != scaled_width || m_last_window_height != scaled_height || m_last_window_scale != dpr)
-      {
-        m_last_window_width = scaled_width;
-        m_last_window_height = scaled_height;
-        m_last_window_scale = dpr;
-        emit windowResizedEvent(scaled_width, scaled_height, dpr);
-      }
-
-      updateCenterPos();
+      checkForSizeChange();
       return true;
     }
 
     case QEvent::Move:
     {
+      QWidget::event(event);
+
       updateCenterPos();
       return true;
     }
@@ -396,6 +383,9 @@ bool DisplayWidget::event(QEvent* event)
       handleCloseEvent(static_cast<QCloseEvent*>(event));
       return true;
     }
+
+    case QEvent::Paint:
+      return true;
 
     case QEvent::WindowStateChange:
     {
@@ -424,19 +414,6 @@ DisplayContainer::DisplayContainer() : QStackedWidget(nullptr)
 }
 
 DisplayContainer::~DisplayContainer() = default;
-
-bool DisplayContainer::isNeeded(bool fullscreen, bool render_to_main)
-{
-#if defined(_WIN32) || defined(__APPLE__)
-  return false;
-#else
-  if (!QtHost::IsRunningOnWayland())
-    return false;
-
-  // We only need this on Wayland because of client-side decorations...
-  return (fullscreen || !render_to_main);
-#endif
-}
 
 void DisplayContainer::setDisplayWidget(DisplayWidget* widget)
 {
@@ -546,10 +523,9 @@ bool AuxiliaryDisplayWidget::event(QEvent* event)
 
     case QEvent::MouseMove:
     {
-      const qreal dpr = QtUtils::GetDevicePixelRatioForWidget(this);
       const QPoint mouse_pos = static_cast<QMouseEvent*>(event)->pos();
-      const float scaled_x = static_cast<float>(static_cast<qreal>(mouse_pos.x()) * dpr);
-      const float scaled_y = static_cast<float>(static_cast<qreal>(mouse_pos.y()) * dpr);
+      const float scaled_x = static_cast<float>(static_cast<qreal>(mouse_pos.x()) * m_last_window_scale);
+      const float scaled_y = static_cast<float>(static_cast<qreal>(mouse_pos.y()) * m_last_window_scale);
 
       g_emu_thread->queueAuxiliaryRenderWindowInputEvent(
         m_userdata, Host::AuxiliaryRenderWindowEvent::MouseMoved,
@@ -599,32 +575,32 @@ bool AuxiliaryDisplayWidget::event(QEvent* event)
       return true;
     }
 
-    case QEvent::Paint:
     case QEvent::Resize:
+    case QEvent::DevicePixelRatioChange:
     {
       QWidget::event(event);
 
-      const float dpr = QtUtils::GetDevicePixelRatioForWidget(this);
-      const u32 scaled_width =
-        static_cast<u32>(std::max(static_cast<int>(std::ceil(static_cast<qreal>(width()) * dpr)), 1));
-      const u32 scaled_height =
-        static_cast<u32>(std::max(static_cast<int>(std::ceil(static_cast<qreal>(height()) * dpr)), 1));
-
       // avoid spamming resize events for paint events (sent on move on windows)
-      if (m_last_window_width != scaled_width || m_last_window_height != scaled_height || m_last_window_scale != dpr)
+      const auto& [size, dpr] = QtUtils::GetPixelSizeForWidget(this);
+      if (m_last_window_size != size || m_last_window_scale != dpr)
       {
-        m_last_window_width = scaled_width;
-        m_last_window_height = scaled_height;
+        DEV_LOG("Display widget resized to {}x{} (Qt {}x{}) DPR={}", size.width(), size.height(), width(), height(),
+                dpr);
+
+        m_last_window_size = size;
         m_last_window_scale = dpr;
         g_emu_thread->queueAuxiliaryRenderWindowInputEvent(
           m_userdata, Host::AuxiliaryRenderWindowEvent::Resized,
-          Host::AuxiliaryRenderWindowEventParam{.uint_param = scaled_width},
-          Host::AuxiliaryRenderWindowEventParam{.uint_param = scaled_height},
-          Host::AuxiliaryRenderWindowEventParam{.float_param = dpr});
+          Host::AuxiliaryRenderWindowEventParam{.uint_param = static_cast<u32>(size.width())},
+          Host::AuxiliaryRenderWindowEventParam{.uint_param = static_cast<u32>(size.height())},
+          Host::AuxiliaryRenderWindowEventParam{.float_param = static_cast<float>(dpr)});
       }
 
       return true;
     }
+
+    case QEvent::Paint:
+      return true;
 
     default:
       return QWidget::event(event);
@@ -635,7 +611,7 @@ AuxiliaryDisplayWidget* AuxiliaryDisplayWidget::create(s32 pos_x, s32 pos_y, u32
                                                        const QString& title, const QString& icon_name, void* userdata)
 {
   QStackedWidget* parent = nullptr;
-  if (DisplayContainer::isNeeded(false, false))
+  if (QtHost::IsDisplayWidgetContainerNeeded())
   {
     parent = new QStackedWidget(nullptr);
     parent->resize(width, height);

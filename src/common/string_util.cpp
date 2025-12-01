@@ -31,7 +31,7 @@ static std::string DecodeUTF16StringImpl(const void* bytes, size_t size);
 
 bool StringUtil::WildcardMatch(const char* subject, const char* mask, bool case_sensitive /*= true*/)
 {
-  if (case_sensitive)
+  if (!case_sensitive)
   {
     const char* cp = nullptr;
     const char* mp = nullptr;
@@ -417,7 +417,7 @@ std::string StringUtil::ReplaceAll(const std::string_view subject, const std::st
 
 void StringUtil::ReplaceAll(std::string* subject, const std::string_view search, const std::string_view replacement)
 {
-  if (!subject->empty())
+  if (!subject->empty() && !search.empty())
   {
     std::string::size_type start_pos = 0;
     while ((start_pos = subject->find(search, start_pos)) != std::string::npos)
@@ -461,6 +461,32 @@ bool StringUtil::ParseAssignmentString(const std::string_view str, std::string_v
     *value = std::string_view();
 
   return true;
+}
+
+size_t StringUtil::GetUTF8CharacterCount(const std::string_view str)
+{
+  size_t count = 0;
+
+  const size_t len = str.length();
+  for (size_t pos = 0; pos < len;)
+  {
+    const u8 c = str[pos];
+
+    if (c < 0x80) // ASCII
+      pos += 1;
+    else if ((c & 0xE0) == 0xC0) // 2-byte sequence
+      pos += 2;
+    else if ((c & 0xF0) == 0xE0) // 3-byte sequence
+      pos += 3;
+    else if ((c & 0xF8) == 0xF0 && c <= 0xF4) // 4-byte sequence (limited to 0xF4)
+      pos += 4;
+    else // Unknown/invalid leading byte: treat as one invalid byte (replacement), advance one.
+      pos += 1;
+
+    ++count;
+  }
+
+  return count;
 }
 
 void StringUtil::EncodeAndAppendUTF8(std::string& s, char32_t ch)

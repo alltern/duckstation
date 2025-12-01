@@ -1,10 +1,9 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
 #include "input_types.h"
-#include "settings.h"
 #include "types.h"
 
 #include <array>
@@ -77,17 +76,8 @@ public:
   /// Returns a bitmask of the current button states, 1 = on.
   virtual u32 GetButtonStateBits() const;
 
-  /// Returns the current state of the specified vibration motor.
-  virtual float GetVibrationMotorState(u32 index) const;
-
-  /// Returns true if the controller supports analog mode, and it is active.
-  virtual bool InAnalogMode() const;
-
   /// Returns analog input bytes packed as a u32. Values are specific to controller type.
   virtual std::optional<u32> GetAnalogInputBytes() const;
-
-  /// Returns the colour to use in the input overlay.
-  virtual u32 GetInputOverlayIconColor() const;
 
   /// Loads/refreshes any per-controller settings.
   virtual void LoadSettings(const SettingsInterface& si, const char* section, bool initial);
@@ -101,12 +91,6 @@ public:
   /// Returns general information for the specified controller type.
   static const ControllerInfo& GetControllerInfo(ControllerType type);
   static const ControllerInfo* GetControllerInfo(std::string_view name);
-
-  /// Applies an analog deadzone/sensitivity.
-  static float ApplyAnalogDeadzoneSensitivity(float deadzone, float sensitivity, float value)
-  {
-    return (value < deadzone) ? 0.0f : ((value - deadzone) / (1.0f - deadzone) * sensitivity);
-  }
 
   /// Returns true if the specified coordinates are inside a circular deadzone.
   static bool InCircularDeadzone(float deadzone, float pos_x, float pos_y);

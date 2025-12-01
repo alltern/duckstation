@@ -4,7 +4,8 @@
 #include "core/achievements.h"
 #include "core/bus.h"
 #include "core/controller.h"
-#include "core/fullscreen_ui.h"
+#include "core/fullscreenui.h"
+#include "core/fullscreenui_widgets.h"
 #include "core/game_list.h"
 #include "core/gpu.h"
 #include "core/gpu_backend.h"
@@ -19,7 +20,6 @@
 
 #include "util/cd_image.h"
 #include "util/gpu_device.h"
-#include "util/imgui_fullscreen.h"
 #include "util/imgui_manager.h"
 #include "util/input_manager.h"
 #include "util/platform_misc.h"
@@ -34,6 +34,7 @@
 #include "common/sha256_digest.h"
 #include "common/string_util.h"
 #include "common/threading.h"
+#include "common/time_helpers.h"
 #include "common/timer.h"
 
 #include "fmt/format.h"
@@ -158,16 +159,6 @@ void Host::ReportErrorAsync(std::string_view title, std::string_view message)
     ERROR_LOG("ReportErrorAsync: {}: {}", title, message);
   else if (!message.empty())
     ERROR_LOG("ReportErrorAsync: {}", message);
-}
-
-bool Host::ConfirmMessage(std::string_view title, std::string_view message)
-{
-  if (!title.empty() && !message.empty())
-    ERROR_LOG("ConfirmMessage: {}: {}", title, message);
-  else if (!message.empty())
-    ERROR_LOG("ConfirmMessage: {}", message);
-
-  return true;
 }
 
 void Host::ConfirmMessageAsync(std::string_view title, std::string_view message, ConfirmMessageAsyncCallback callback,
@@ -426,16 +417,6 @@ void Host::RequestSystemShutdown(bool allow_confirm, bool save_state, bool check
   //
 }
 
-bool Host::IsFullscreen()
-{
-  return false;
-}
-
-void Host::SetFullscreen(bool enabled)
-{
-  //
-}
-
 std::optional<WindowInfo> Host::AcquireRenderWindow(RenderAPI render_api, bool fullscreen, bool exclusive_fullscreen,
                                                     Error* error)
 {
@@ -445,6 +426,11 @@ std::optional<WindowInfo> Host::AcquireRenderWindow(RenderAPI render_api, bool f
 void Host::ReleaseRenderWindow()
 {
   //
+}
+
+bool Host::CanChangeFullscreenMode(bool new_fullscreen_state)
+{
+  return false;
 }
 
 void Host::BeginTextInput()
@@ -604,17 +590,12 @@ std::string Host::FormatNumber(NumberFormatType type, s64 value)
         DefaultCaseIsUnreachable();
     }
 
-    struct tm ttime = {};
-    const std::time_t tvalue = static_cast<std::time_t>(value);
-#ifdef _MSC_VER
-    localtime_s(&ttime, &tvalue);
-#else
-    localtime_r(&tvalue, &ttime);
-#endif
+    ret.resize(128);
 
-    char buf[128];
-    std::strftime(buf, std::size(buf), "%x", &ttime);
-    ret.assign(buf);
+    if (const std::optional<std::tm> ltime = Common::LocalTime(static_cast<std::time_t>(value)))
+      ret.resize(std::strftime(ret.data(), ret.size(), format, &ltime.value()));
+    else
+      ret = "Invalid";
   }
   else
   {
@@ -688,21 +669,6 @@ void Host::OpenHostFileSelectorAsync(std::string_view title, bool select_directo
                                      std::string_view initial_directory /* = std::string_view() */)
 {
   callback(std::string());
-}
-
-std::optional<u32> InputManager::ConvertHostKeyboardStringToCode(std::string_view str)
-{
-  return std::nullopt;
-}
-
-std::optional<std::string> InputManager::ConvertHostKeyboardCodeToString(u32 code)
-{
-  return std::nullopt;
-}
-
-const char* InputManager::ConvertHostKeyboardCodeToIcon(u32 code)
-{
-  return nullptr;
 }
 
 void Host::AddFixedInputBindings(const SettingsInterface& si)
@@ -783,7 +749,7 @@ void RegTestHost::DumpSystemStateHashes()
   // don't save full state on gpu dump, it's not going to be complete...
   if (!System::IsReplayingGPUDump())
   {
-    DynamicHeapArray<u8> state_data(System::GetMaxSaveStateSize());
+    DynamicHeapArray<u8> state_data(System::GetMaxSaveStateSize(g_settings.cpu_enable_8mb_ram));
     size_t state_data_size;
     if (!System::SaveStateDataToBuffer(state_data, &state_data_size, &error))
     {

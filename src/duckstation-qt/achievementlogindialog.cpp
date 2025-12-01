@@ -8,20 +8,19 @@
 
 #include "common/error.h"
 
-#include <QtWidgets/QMessageBox>
-
 #include "moc_achievementlogindialog.cpp"
 
 AchievementLoginDialog::AchievementLoginDialog(QWidget* parent, Achievements::LoginRequestReason reason)
   : QDialog(parent), m_reason(reason)
 {
   m_ui.setupUi(this);
-  m_ui.iconLabel->setPixmap(QPixmap(QString::fromStdString(QtHost::GetResourcePath("images/ra-icon.webp", true))));
+  m_ui.iconLabel->setPixmap(QPixmap(QtHost::GetResourceQPath("images/ra-icon.webp", true)));
   QFont title_font(m_ui.titleLabel->font());
   title_font.setBold(true);
   title_font.setPixelSize(20);
   m_ui.titleLabel->setFont(title_font);
   setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
+  setAttribute(Qt::WA_DeleteOnClose);
 
   // Adjust text if needed based on reason.
   if (reason == Achievements::LoginRequestReason::TokenInvalid)
@@ -51,8 +50,7 @@ void AchievementLoginDialog::loginClicked()
     Error error;
     const bool result = Achievements::Login(username.toUtf8().constData(), password.toUtf8().constData(), &error);
     const QString message = QString::fromStdString(error.GetDescription());
-    QMetaObject::invokeMethod(this, "processLoginResult", Qt::QueuedConnection, Q_ARG(bool, result),
-                              Q_ARG(const QString&, message));
+    QMetaObject::invokeMethod(this, &AchievementLoginDialog::processLoginResult, Qt::QueuedConnection, result, message);
   });
 }
 
@@ -74,54 +72,89 @@ void AchievementLoginDialog::processLoginResult(bool result, const QString& mess
 {
   if (!result)
   {
-    QMessageBox::critical(
-      this, tr("Login Error"),
+    QtUtils::AsyncMessageBox(
+      this, QMessageBox::Critical, tr("Login Error"),
       tr("Login failed.\nError: %1\n\nPlease check your username and password, and try again.").arg(message));
     m_ui.status->setText(tr("Login failed."));
     enableUI(true);
     return;
   }
 
-  if (!Host::GetBaseBoolSettingValue("Cheevos", "Enabled", false) &&
-      QMessageBox::question(this, tr("Enable Achievements"),
-                            tr("Achievement tracking is not currently enabled. Your login will have no effect until "
-                               "after tracking is enabled.\n\nDo you want to enable tracking now?"),
-                            QMessageBox::Yes, QMessageBox::No) == QMessageBox::Yes)
+  // don't ask to enable etc if we are just reauthenticating
+  if (m_reason == Achievements::LoginRequestReason::TokenInvalid)
   {
+    accept();
+    return;
+  }
+
+  askToEnableAchievementsAndAccept();
+}
+
+void AchievementLoginDialog::askToEnableAchievementsAndAccept()
+{
+  if (Host::GetBaseBoolSettingValue("Cheevos", "Enabled", false))
+  {
+    askToEnableHardcoreModeAndAccept();
+    return;
+  }
+
+  QMessageBox* const msgbox =
+    QtUtils::NewMessageBox(this, QMessageBox::Question, tr("Enable Achievements"),
+                           tr("Achievement tracking is not currently enabled. Your login will have no effect until "
+                              "after tracking is enabled.\n\nDo you want to enable tracking now?"),
+                           QMessageBox::Yes | QMessageBox::No, QMessageBox::NoButton);
+  msgbox->connect(msgbox, &QMessageBox::accepted, this, [this]() {
     Host::SetBaseBoolSettingValue("Cheevos", "Enabled", true);
     Host::CommitBaseSettingChanges();
     g_emu_thread->applySettings();
+    askToEnableHardcoreModeAndAccept();
+  });
+  msgbox->connect(msgbox, &QMessageBox::rejected, this, &AchievementLoginDialog::accept);
+  msgbox->open();
+}
+
+void AchievementLoginDialog::askToEnableHardcoreModeAndAccept()
+{
+  if (Host::GetBaseBoolSettingValue("Cheevos", "ChallengeMode", false))
+  {
+    askToResetGameAndAccept();
+    return;
   }
 
-  if (!Host::GetBaseBoolSettingValue("Cheevos", "ChallengeMode", false) &&
-      QMessageBox::question(
-        this, tr("Enable Hardcore Mode"),
-        tr("Hardcore mode is not currently enabled. Enabling hardcore mode allows you to set times, scores, and "
-           "participate in game-specific leaderboards.\n\nHowever, hardcore mode also prevents the usage of save "
-           "states, cheats and slowdown functionality.\n\nDo you want to enable hardcore mode?"),
-        QMessageBox::Yes, QMessageBox::No) == QMessageBox::Yes)
-  {
+  QMessageBox* const msgbox = QtUtils::NewMessageBox(
+    this, QMessageBox::Question, tr("Enable Hardcore Mode"),
+    tr("Hardcore mode is not currently enabled. Enabling hardcore mode allows you to set times, scores, and "
+       "participate in game-specific leaderboards.\n\nHowever, hardcore mode also prevents the usage of save "
+       "states, cheats and slowdown functionality.\n\nDo you want to enable hardcore mode?"),
+    QMessageBox::Yes | QMessageBox::No, QMessageBox::NoButton);
+  msgbox->connect(msgbox, &QMessageBox::accepted, this, [this]() {
     Host::SetBaseBoolSettingValue("Cheevos", "ChallengeMode", true);
     Host::CommitBaseSettingChanges();
     g_emu_thread->applySettings();
+    askToResetGameAndAccept();
+  });
+  msgbox->connect(msgbox, &QMessageBox::rejected, this, &AchievementLoginDialog::accept);
+  msgbox->open();
+}
 
-    bool has_active_game;
-    {
-      auto lock = Achievements::GetLock();
-      has_active_game = Achievements::HasActiveGame();
-    }
-
-    if (has_active_game &&
-        QMessageBox::question(
-          QtUtils::GetRootWidget(this), tr("Reset System"),
-          tr("Hardcore mode will not be enabled until the system is reset. Do you want to reset the system now?")) ==
-          QMessageBox::Yes)
-    {
-      g_emu_thread->resetSystem(true);
-    }
+void AchievementLoginDialog::askToResetGameAndAccept()
+{
+  if (!QtHost::IsSystemValid())
+  {
+    accept();
+    return;
   }
 
-  accept();
+  QMessageBox* const msgbox = QtUtils::NewMessageBox(
+    this, QMessageBox::Question, tr("Reset System"),
+    tr("Hardcore mode will not be enabled until the system is reset. Do you want to reset the system now?"),
+    QMessageBox::Yes | QMessageBox::No, QMessageBox::NoButton);
+  msgbox->connect(msgbox, &QMessageBox::accepted, this, [this]() {
+    g_emu_thread->resetSystem(true);
+    accept();
+  });
+  msgbox->connect(msgbox, &QMessageBox::rejected, this, &AchievementLoginDialog::accept);
+  msgbox->open();
 }
 
 void AchievementLoginDialog::connectUi()

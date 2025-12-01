@@ -149,6 +149,12 @@ public:
     return (!m_force_progressive_scan && m_GPUSTAT.vertical_interlace);
   }
 
+  /// Returns true if scanout is forced to progressive.
+  ALWAYS_INLINE bool IsProgressiveDisplayScanForced() const
+  {
+    return (m_force_progressive_scan && m_GPUSTAT.vertical_interlace);
+  }
+
   /// Returns true if interlaced rendering is enabled and force progressive scan is disabled.
   ALWAYS_INLINE bool IsInterlacedRenderingEnabled() const
   {
@@ -183,8 +189,6 @@ public:
 
   float ComputeHorizontalFrequency() const;
   float ComputeVerticalFrequency() const;
-  float ComputeDisplayAspectRatio() const;
-  float ComputeSourceAspectRatio() const;
   float ComputePixelAspectRatio() const;
 
   /// Computes aspect ratio correction, i.e. the scale to apply to the source aspect ratio to preserve
@@ -222,7 +226,7 @@ public:
   void FrameDoneEvent(TickCount ticks);
 
   // Dumps raw VRAM to a file.
-  bool DumpVRAMToFile(const char* filename);
+  bool DumpVRAMToFile(std::string path, Error* error);
 
   // Kicks the current frame to the backend for display.
   void UpdateDisplay(bool submit_frame);
@@ -251,8 +255,8 @@ private:
   }
   ALWAYS_INLINE static constexpr TickCount SystemTicksToGPUTicks(TickCount sysclk_ticks) { return sysclk_ticks << 1; }
 
-  static bool DumpVRAMToFile(const char* filename, u32 width, u32 height, u32 stride, const void* buffer,
-                             bool remove_alpha);
+  static bool DumpVRAMToFile(std::string path, u32 width, u32 height, u32 stride, const void* buffer, bool remove_alpha,
+                             Error* error = nullptr);
 
   void SoftReset();
   void ClearDisplay();
@@ -264,6 +268,7 @@ private:
   // Update ticks for this execution slice
   void UpdateCRTCTickEvent();
   void UpdateCommandTickEvent();
+  u8 UpdateOrGetGPUBusyPct();
 
   // Updates dynamic bits in GPUSTAT (ready to send VRAM/ready to receive DMA)
   void UpdateDMARequest();
@@ -411,6 +416,11 @@ private:
 
   GPUSTAT m_GPUSTAT = {};
 
+  bool m_console_is_pal = false;
+  bool m_set_texture_disable_mask = false;
+  bool m_drawing_area_changed = false;
+  bool m_force_progressive_scan = false;
+
   struct DrawMode
   {
     static constexpr u16 PALETTE_MASK = UINT16_C(0b0111111111111111);
@@ -430,13 +440,8 @@ private:
 
   GPUDrawingArea m_drawing_area = {};
   GPUDrawingOffset m_drawing_offset = {};
-  GSVector4i m_clamped_drawing_area = {};
 
-  bool m_console_is_pal = false;
-  bool m_set_texture_disable_mask = false;
-  bool m_drawing_area_changed = false;
-  bool m_force_progressive_scan = false;
-  ForceVideoTimingMode m_force_frame_timings = ForceVideoTimingMode::Disabled;
+  GSVector4i m_clamped_drawing_area = {};
 
   struct CRTCState
   {
@@ -500,9 +505,9 @@ private:
     u16 horizontal_total;
     u16 vertical_total;
 
+    u16 current_scanline;
     TickCount fractional_ticks;
     TickCount current_tick_in_scanline;
-    u32 current_scanline;
 
     TickCount fractional_dot_ticks; // only used when timer0 is enabled
 
@@ -520,20 +525,13 @@ private:
     }
   } m_crtc_state = {};
 
-  BlitterState m_blitter_state = BlitterState::Idle;
   u32 m_command_total_words = 0;
   TickCount m_pending_command_ticks = 0;
-
-  /// GPUREAD value for non-VRAM-reads.
-  u32 m_GPUREAD_latch = 0;
-
-  // These are the bits from the palette register, but zero extended to 32-bit, so we can have an "invalid" value.
-  // If an extra byte is ever not needed here for padding, the 8-bit flag could be packed into the MSB of this value.
-  u32 m_current_clut_reg_bits = {};
-  bool m_current_clut_is_8bit = false;
+  u32 m_active_ticks_since_last_update = 0;
 
   /// True if currently executing/syncing.
   bool m_executing_commands = false;
+  BlitterState m_blitter_state = BlitterState::Idle;
 
   struct VRAMTransfer
   {
@@ -544,6 +542,17 @@ private:
     u16 col;
     u16 row;
   } m_vram_transfer = {};
+
+  // One byte free, store the GPU usage here.
+  u8 m_last_gpu_busy_pct = 0;
+
+  // These are the bits from the palette register, but zero extended to 32-bit, so we can have an "invalid" value.
+  // If an extra byte is ever not needed here for padding, the 8-bit flag could be packed into the MSB of this value.
+  bool m_current_clut_is_8bit = false;
+  u32 m_current_clut_reg_bits = {};
+
+  /// GPUREAD value for non-VRAM-reads.
+  u32 m_GPUREAD_latch = 0;
 
   std::unique_ptr<GPUDump::Recorder> m_gpu_dump;
 

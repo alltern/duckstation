@@ -56,11 +56,6 @@ PostProcessing::Shader::Shader(std::string name) : m_name(std::move(name))
 
 PostProcessing::Shader::~Shader() = default;
 
-bool PostProcessing::Shader::IsValid() const
-{
-  return false;
-}
-
 std::vector<PostProcessing::ShaderOption> PostProcessing::Shader::TakeOptions()
 {
   return std::move(m_options);
@@ -114,6 +109,13 @@ const PostProcessing::ShaderOption* PostProcessing::Shader::GetOptionByName(std:
   }
 
   return nullptr;
+}
+
+bool PostProcessing::Shader::ResizeTargets(u32 source_width, u32 source_height, GPUTexture::Format target_format,
+                                           u32 target_width, u32 target_height, u32 viewport_width, u32 viewport_height,
+                                           Error* error)
+{
+  return true;
 }
 
 PostProcessing::ShaderOption* PostProcessing::Shader::GetOptionByName(std::string_view name)

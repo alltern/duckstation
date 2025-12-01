@@ -110,9 +110,7 @@ void LogWindow::updateWindowTitle()
 
 void LogWindow::createUi()
 {
-  QIcon icon;
-  icon.addFile(QString::fromUtf8(":/icons/duck.png"), QSize(), QIcon::Normal, QIcon::Off);
-  setWindowIcon(icon);
+  setWindowIcon(QIcon::fromTheme(QStringLiteral("file-list-line")));
   setWindowFlag(Qt::CustomizeWindowHint, true);
   setWindowFlag(Qt::WindowCloseButtonHint, false);
   updateWindowTitle();
@@ -123,6 +121,7 @@ void LogWindow::createUi()
   setMenuBar(menu);
 
   QMenu* log_menu = menu->addMenu("&Log");
+  QtUtils::StylePopupMenu(log_menu);
   action = log_menu->addAction(tr("&Clear"));
   connect(action, &QAction::triggered, this, &LogWindow::onClearTriggered);
   action = log_menu->addAction(tr("&Save..."));
@@ -131,9 +130,11 @@ void LogWindow::createUi()
   log_menu->addSeparator();
 
   action = log_menu->addAction(tr("Cl&ose"));
+  QtUtils::StylePopupMenu(log_menu);
   connect(action, &QAction::triggered, this, &LogWindow::close);
 
   QMenu* settings_menu = menu->addMenu(tr("&Settings"));
+  QtUtils::StylePopupMenu(settings_menu);
 
   action = settings_menu->addAction(tr("Log To &System Console"));
   action->setCheckable(true);
@@ -160,6 +161,7 @@ void LogWindow::createUi()
   settings_menu->addSeparator();
 
   m_level_menu = settings_menu->addMenu(tr("&Log Level"));
+  QtUtils::StylePopupMenu(m_level_menu);
   for (u32 i = 0; i < static_cast<u32>(Log::Level::MaxCount); i++)
   {
     action = m_level_menu->addAction(QString::fromUtf8(Settings::GetLogLevelDisplayName(static_cast<Log::Level>(i))));
@@ -169,6 +171,7 @@ void LogWindow::createUi()
   updateLogLevelUi();
 
   QMenu* filters_menu = menu->addMenu(tr("&Channels"));
+  QtUtils::StylePopupMenu(filters_menu);
   connect(filters_menu, &QMenu::aboutToShow, this, [filters_menu]() {
     filters_menu->clear();
     populateFilterMenu(filters_menu);
@@ -180,18 +183,7 @@ void LogWindow::createUi()
   m_text->setTextInteractionFlags(Qt::TextSelectableByKeyboard | Qt::TextSelectableByMouse);
   m_text->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
   m_text->setMaximumBlockCount(MAX_LINES);
-
-#if defined(_WIN32)
-  QFont font("Consolas");
-  font.setPointSize(10);
-#elif defined(__APPLE__)
-  QFont font("Monaco");
-  font.setPointSize(11);
-#else
-  QFont font("Monospace");
-  font.setStyleHint(QFont::TypeWriter);
-#endif
-  m_text->setFont(font);
+  m_text->setFont(QtHost::GetFixedFont());
 
   setCentralWidget(m_text);
 }
@@ -200,7 +192,7 @@ void LogWindow::updateLogLevelUi()
 {
   const Log::Level level =
     Settings::ParseLogLevelName(Host::GetBaseStringSettingValue("Logging", "LogLevel", "").c_str())
-      .value_or(Settings::DEFAULT_LOG_LEVEL);
+      .value_or(Log::DEFAULT_LOG_LEVEL);
 
   const QList<QAction*> actions = m_level_menu->actions();
   for (u32 i = 0; i < actions.size(); i++)
@@ -222,14 +214,13 @@ void LogWindow::populateFilterMenu(QMenu* filter_menu)
   for (const char* channel_name : Log::GetChannelNames())
   {
     const bool enabled = si->GetBoolValue("Logging", channel_name, true);
-    QAction* action = filter_menu->addAction(QString::fromUtf8(channel_name));
-    action->setCheckable(true);
-    action->setChecked(enabled);
-    connect(action, &QAction::triggered, action, [channel_name](bool checked) {
+    QAction* const action = filter_menu->addAction(QString::fromUtf8(channel_name), [channel_name](bool checked) {
       Host::SetBaseBoolSettingValue("Logging", channel_name, checked);
       Host::CommitBaseSettingChanges();
       g_emu_thread->applySettings(false);
     });
+    action->setCheckable(true);
+    action->setChecked(enabled);
   }
 }
 
@@ -247,7 +238,7 @@ void LogWindow::onSaveTriggered()
   QFile file(path);
   if (!file.open(QFile::WriteOnly | QFile::Text))
   {
-    QMessageBox::critical(this, tr("Error"), tr("Failed to open file for writing."));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"), tr("Failed to open file for writing."));
     return;
   }
 
@@ -282,9 +273,8 @@ void LogWindow::logCallback(void* pUserParam, Log::MessageCategory cat, const ch
   }
   else
   {
-    QMetaObject::invokeMethod(this_ptr, "appendMessage", Qt::QueuedConnection,
-                              Q_ARG(const QLatin1StringView&, qchannel), Q_ARG(quint32, static_cast<u32>(cat)),
-                              Q_ARG(const QString&, qmessage));
+    QMetaObject::invokeMethod(this_ptr, &LogWindow::appendMessage, Qt::QueuedConnection, qchannel,
+                              static_cast<quint32>(cat), qmessage);
   }
 }
 

@@ -5,7 +5,7 @@
 #include "cd_image.h"
 
 // TODO: Remove me..
-#include "core/host.h"
+#include "core/settings.h"
 
 #include "common/assert.h"
 #include "common/error.h"
@@ -175,11 +175,6 @@ enum class SCSIReadMode : u8
   }
 }
 
-[[maybe_unused]] static bool ShouldTryReadingSubcode()
-{
-  return !Host::GetBaseBoolSettingValue("CDROM", "IgnoreHostSubcode", false);
-}
-
 #if defined(_WIN32)
 
 // The include order here is critical.
@@ -252,11 +247,11 @@ bool CDImageDeviceWin32::Open(const char* filename, Error* error)
   bool try_sptd = true;
 
   m_filename = filename;
-  m_hDevice = CreateFile(filename, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                         OPEN_EXISTING, 0, NULL);
+  m_hDevice = CreateFileA(filename, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                          OPEN_EXISTING, 0, NULL);
   if (m_hDevice == INVALID_HANDLE_VALUE)
   {
-    m_hDevice = CreateFile(filename, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, NULL);
+    m_hDevice = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, NULL);
     if (m_hDevice != INVALID_HANDLE_VALUE)
     {
       WARNING_LOG("Could not open '{}' as read/write, can't use SPTD", filename);
@@ -564,14 +559,14 @@ bool CDImageDeviceWin32::DetermineReadMode(bool try_sptd)
   const Index& first_index = m_indices[m_tracks[0].first_index];
   const LBA track_1_lba = static_cast<LBA>(first_index.file_offset);
   const LBA track_1_subq_lba = first_index.start_lba_on_disc;
-  const bool check_subcode = ShouldTryReadingSubcode();
 
   if (try_sptd)
   {
     std::optional<u32> transfer_size;
 
     DEV_LOG("Trying SCSI read with full subcode...");
-    if (check_subcode && (transfer_size = DoSCSIRead(track_1_lba, SCSIReadMode::Full)).has_value())
+    if (!g_settings.cdrom_ignore_host_subcode &&
+        (transfer_size = DoSCSIRead(track_1_lba, SCSIReadMode::Full)).has_value())
     {
       if (VerifySCSIReadData(std::span<u8>(m_buffer.data(), transfer_size.value()), SCSIReadMode::Full,
                              track_1_subq_lba))
@@ -584,7 +579,8 @@ bool CDImageDeviceWin32::DetermineReadMode(bool try_sptd)
     }
 
     WARNING_LOG("Full subcode failed, trying SCSI read with only subq...");
-    if (check_subcode && (transfer_size = DoSCSIRead(track_1_lba, SCSIReadMode::SubQOnly)).has_value())
+    if (!g_settings.cdrom_ignore_host_subcode &&
+        (transfer_size = DoSCSIRead(track_1_lba, SCSIReadMode::SubQOnly)).has_value())
     {
       if (VerifySCSIReadData(std::span<u8>(m_buffer.data(), transfer_size.value()), SCSIReadMode::SubQOnly,
                              track_1_subq_lba))
@@ -1033,11 +1029,11 @@ bool CDImageDeviceLinux::DetermineReadMode(Error* error)
 {
   const LBA track_1_lba = static_cast<LBA>(m_indices[m_tracks[0].first_index].file_offset);
   const LBA track_1_subq_lba = track_1_lba + FRAMES_PER_SECOND * 2;
-  const bool check_subcode = ShouldTryReadingSubcode();
   std::optional<u32> transfer_size;
 
   DEV_LOG("Trying SCSI read with full subcode...");
-  if (check_subcode && (transfer_size = DoSCSIRead(track_1_lba, SCSIReadMode::Full)).has_value())
+  if (!g_settings.cdrom_ignore_host_subcode &&
+      (transfer_size = DoSCSIRead(track_1_lba, SCSIReadMode::Full)).has_value())
   {
     if (VerifySCSIReadData(std::span<u8>(m_buffer.data(), transfer_size.value()), SCSIReadMode::Full, track_1_subq_lba))
     {
@@ -1048,7 +1044,8 @@ bool CDImageDeviceLinux::DetermineReadMode(Error* error)
   }
 
   WARNING_LOG("Full subcode failed, trying SCSI read with only subq...");
-  if (check_subcode && (transfer_size = DoSCSIRead(track_1_lba, SCSIReadMode::SubQOnly)).has_value())
+  if (!g_settings.cdrom_ignore_host_subcode &&
+      (transfer_size = DoSCSIRead(track_1_lba, SCSIReadMode::SubQOnly)).has_value())
   {
     if (VerifySCSIReadData(std::span<u8>(m_buffer.data(), transfer_size.value()), SCSIReadMode::SubQOnly,
                            track_1_subq_lba))
@@ -1506,12 +1503,11 @@ bool CDImageDeviceMacOS::ReadSectorToBuffer(LBA lba)
 bool CDImageDeviceMacOS::DetermineReadMode(Error* error)
 {
   const LBA track_1_lba = static_cast<LBA>(m_indices[m_tracks[0].first_index].file_offset);
-  const bool check_subcode = ShouldTryReadingSubcode();
 
   DEV_LOG("Trying read with full subcode...");
   m_read_mode = SCSIReadMode::Full;
   m_current_lba = m_lba_count;
-  if (check_subcode && ReadSectorToBuffer(track_1_lba))
+  if (!g_settings.cdrom_ignore_host_subcode && ReadSectorToBuffer(track_1_lba))
   {
     if (VerifySCSIReadData(std::span<u8>(m_buffer.data(), RAW_SECTOR_SIZE + ALL_SUBCODE_SIZE), SCSIReadMode::Full,
                            track_1_lba))
@@ -1526,7 +1522,7 @@ bool CDImageDeviceMacOS::DetermineReadMode(Error* error)
   Log_WarningPrint("Full subcode failed, trying SCSI read with only subq...");
   m_read_mode = SCSIReadMode::SubQOnly;
   m_current_lba = m_lba_count;
-  if (check_subcode && ReadSectorToBuffer(track_1_lba))
+  if (!g_settings.cdrom_ignore_host_subcode && ReadSectorToBuffer(track_1_lba))
   {
     if (VerifySCSIReadData(std::span<u8>(m_buffer.data(), RAW_SECTOR_SIZE + SUBCHANNEL_BYTES_PER_FRAME),
                            SCSIReadMode::SubQOnly, track_1_lba))
@@ -1596,7 +1592,6 @@ std::vector<std::pair<std::string, std::string>> CDImage::GetDeviceList()
     }
 
     IOObjectRelease(iter);
-    CFRelease(classes);
   };
 
   append_list(kIOCDMediaClass);

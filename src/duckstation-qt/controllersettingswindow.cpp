@@ -18,7 +18,6 @@
 #include "common/file_system.h"
 
 #include <QtWidgets/QInputDialog>
-#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QTextEdit>
 #include <array>
 
@@ -112,7 +111,7 @@ void ControllerSettingsWindow::editControllerSettingsForGame(QWidget* parent, IN
   ControllerSettingsWindow* dlg = new ControllerSettingsWindow(sif, false, parent);
   dlg->setWindowFlag(Qt::Window);
   dlg->setAttribute(Qt::WA_DeleteOnClose);
-  dlg->setWindowModality(Qt::WindowModality::WindowModal);
+  dlg->setWindowModality(Qt::WindowModal);
   dlg->setWindowTitle(parent->windowTitle());
   dlg->setWindowIcon(parent->windowIcon());
   dlg->show();
@@ -177,15 +176,17 @@ void ControllerSettingsWindow::onNewProfileClicked()
   std::string profile_path = System::GetInputProfilePath(profile_name);
   if (FileSystem::FileExists(profile_path.c_str()))
   {
-    QMessageBox::critical(this, tr("Error"),
-                          tr("A preset with the name '%1' already exists.").arg(QString::fromStdString(profile_name)));
+    QtUtils::AsyncMessageBox(
+      this, QMessageBox::Critical, tr("Error"),
+      tr("A preset with the name '%1' already exists.").arg(QString::fromStdString(profile_name)));
     return;
   }
 
-  const int res = QMessageBox::question(this, tr("Create Controller Preset"),
-                                        tr("Do you want to copy all bindings from the currently-selected preset to "
-                                           "the new preset? Selecting No will create a completely empty preset."),
-                                        QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+  const int res =
+    QtUtils::MessageBoxQuestion(this, tr("Create Controller Preset"),
+                                tr("Do you want to copy all bindings from the currently-selected preset to "
+                                   "the new preset? Selecting No will create a completely empty preset."),
+                                QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
   if (res == QMessageBox::Cancel)
     return;
 
@@ -195,7 +196,7 @@ void ControllerSettingsWindow::onNewProfileClicked()
     // copy from global or the current profile
     if (!m_editing_settings_interface)
     {
-      const int hkres = QMessageBox::question(
+      const int hkres = QtUtils::MessageBoxQuestion(
         this, tr("Create Controller Preset"),
         tr("Do you want to copy the current hotkey bindings from global settings to the new controller preset?"),
         QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
@@ -231,8 +232,9 @@ void ControllerSettingsWindow::onNewProfileClicked()
 
   if (!temp_si.Save())
   {
-    QMessageBox::critical(this, tr("Error"),
-                          tr("Failed to save the new preset to '%1'.").arg(QString::fromStdString(temp_si.GetPath())));
+    QtUtils::AsyncMessageBox(
+      this, QMessageBox::Critical, tr("Error"),
+      tr("Failed to save the new preset to '%1'.").arg(QString::fromStdString(temp_si.GetPath())));
     return;
   }
 
@@ -242,11 +244,11 @@ void ControllerSettingsWindow::onNewProfileClicked()
 
 void ControllerSettingsWindow::onApplyProfileClicked()
 {
-  if (QMessageBox::question(this, tr("Load Controller Preset"),
-                            tr("Are you sure you want to apply the controller preset named '%1'?\n\n"
-                               "All current global bindings will be removed, and the preset bindings loaded.\n\n"
-                               "You cannot undo this action.")
-                              .arg(m_profile_name)) != QMessageBox::Yes)
+  if (QtUtils::MessageBoxQuestion(this, tr("Load Controller Preset"),
+                                  tr("Are you sure you want to apply the controller preset named '%1'?\n\n"
+                                     "All current global bindings will be removed, and the preset bindings loaded.\n\n"
+                                     "You cannot undo this action.")
+                                    .arg(m_profile_name)) != QMessageBox::Yes)
   {
     return;
   }
@@ -267,10 +269,10 @@ void ControllerSettingsWindow::onApplyProfileClicked()
 
 void ControllerSettingsWindow::onDeleteProfileClicked()
 {
-  if (QMessageBox::question(this, tr("Delete Controller Preset"),
-                            tr("Are you sure you want to delete the controller preset named '%1'?\n\n"
-                               "You cannot undo this action.")
-                              .arg(m_profile_name)) != QMessageBox::Yes)
+  if (QtUtils::MessageBoxQuestion(this, tr("Delete Controller Preset"),
+                                  tr("Are you sure you want to delete the controller preset named '%1'?\n\n"
+                                     "You cannot undo this action.")
+                                    .arg(m_profile_name)) != QMessageBox::Yes)
   {
     return;
   }
@@ -278,7 +280,8 @@ void ControllerSettingsWindow::onDeleteProfileClicked()
   std::string profile_path(System::GetInputProfilePath(m_profile_name.toStdString()));
   if (!FileSystem::DeleteFile(profile_path.c_str()))
   {
-    QMessageBox::critical(this, tr("Error"), tr("Failed to delete '%1'.").arg(QString::fromStdString(profile_path)));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                             tr("Failed to delete '%1'.").arg(QString::fromStdString(profile_path)));
     return;
   }
 
@@ -289,9 +292,9 @@ void ControllerSettingsWindow::onDeleteProfileClicked()
 
 void ControllerSettingsWindow::onRestoreDefaultsClicked()
 {
-  if (QMessageBox::question(this, tr("Restore Defaults"),
-                            tr("Are you sure you want to restore the default controller configuration?\n\n"
-                               "All bindings and configuration will be lost. You cannot undo this action.")) !=
+  if (QtUtils::MessageBoxQuestion(this, tr("Restore Defaults"),
+                                  tr("Are you sure you want to restore the default controller configuration?\n\n"
+                                     "All bindings and configuration will be lost. You cannot undo this action.")) !=
       QMessageBox::Yes)
   {
     return;
@@ -318,7 +321,7 @@ void ControllerSettingsWindow::onCopyGlobalSettingsClicked()
   g_emu_thread->reloadGameSettings();
   createWidgets();
 
-  QMessageBox::information(QtUtils::GetRootWidget(this), tr("DuckStation Controller Settings"),
+  QtUtils::AsyncMessageBox(this, QMessageBox::Information, tr("DuckStation Controller Settings"),
                            isEditingGameSettings() ? tr("Per-game controller configuration reset to global settings.") :
                                                      tr("Controller preset reset to global settings."));
 }
@@ -495,8 +498,10 @@ void ControllerSettingsWindow::createWidgets()
 
 void ControllerSettingsWindow::closeEvent(QCloseEvent* event)
 {
+  if (isEditingGlobalSettings())
+    QtUtils::SaveWindowGeometry(this);
+
   QWidget::closeEvent(event);
-  emit windowClosed();
 }
 
 void ControllerSettingsWindow::updateListDescription(u32 global_slot, ControllerBindingWidget* widget)
@@ -581,7 +586,8 @@ void ControllerSettingsWindow::switchProfile(const std::string_view name)
   std::string path = System::GetInputProfilePath(name);
   if (!FileSystem::FileExists(path.c_str()))
   {
-    QMessageBox::critical(this, tr("Error"), tr("The controller preset named '%1' cannot be found.").arg(name_qstr));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                             tr("The controller preset named '%1' cannot be found.").arg(name_qstr));
     return;
   }
 

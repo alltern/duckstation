@@ -59,7 +59,8 @@ static TinyString GetCubebErrorString(int rv)
     C(CUBEB_ERROR_DEVICE_UNAVAILABLE);
 
     default:
-      return "CUBEB_ERROR_UNKNOWN";
+      ret = "CUBEB_ERROR_UNKNOWN";
+      break;
 
 #undef C
   }
@@ -180,7 +181,8 @@ bool CubebAudioStream::Initialize(const char* driver_name, const char* device_na
       if (!selected_device)
       {
         Host::AddOSDMessage(
-          fmt::format("Requested audio output device '{}' not found, using default.", selected_device_name), 10.0f);
+          OSDMessageType::Error,
+          fmt::format("Requested audio output device '{}' not found, using default.", selected_device_name));
       }
     }
     else

@@ -89,12 +89,24 @@ inline int CompareNoCase(std::string_view s1, std::string_view s2)
   const size_t s2_len = s2.length();
   const size_t compare_len = std::min(s1_len, s2_len);
   const int compare_res = (compare_len > 0) ? Strncasecmp(s1.data(), s2.data(), compare_len) : 0;
-  return (compare_len != 0) ? compare_res : ((s1_len < s2_len) ? -1 : ((s1_len > s2_len) ? 1 : 0));
+  return (compare_res != 0) ? compare_res : ((s1_len < s2_len) ? -1 : ((s1_len > s2_len) ? 1 : 0));
 }
 inline bool ContainsNoCase(std::string_view s1, std::string_view s2)
 {
   return (std::search(s1.begin(), s1.end(), s2.begin(), s2.end(),
                       [](char lhs, char rhs) { return (ToLower(lhs) == ToLower(rhs)); }) != s1.end());
+}
+
+/// Constexpr version of strcmp, suitable for use in static_assert.
+inline constexpr int ConstexprCompare(const char* s1, const char* s2)
+{
+  const size_t len1 = std::char_traits<char>::length(s1);
+  const size_t len2 = std::char_traits<char>::length(s2);
+  const size_t clen = std::min(len1, len2);
+  if (const int res = std::char_traits<char>::compare(s1, s2, clen); res != 0)
+    return res;
+
+  return (len1 < len2) ? -1 : ((len1 > len2) ? 1 : 0);
 }
 
 /// Wrapper around std::from_chars
@@ -141,7 +153,7 @@ inline std::optional<T> FromCharsWithOptionalBase(std::string_view str, std::str
   else if (str.starts_with("0b"))
   {
     base = 2;
-    str = str.substr(1);
+    str = str.substr(2);
   }
   else if (str.starts_with("0") && str.length() > 1)
   {
@@ -445,6 +457,9 @@ ALWAYS_INLINE std::optional<std::string_view> GetNextToken(std::string_view& car
 
 /// Unicode replacement character.
 inline constexpr char32_t UNICODE_REPLACEMENT_CHARACTER = 0xFFFD;
+
+/// Returns the length of a UTF-8 string in codepoints.
+size_t GetUTF8CharacterCount(const std::string_view str);
 
 /// Appends a UTF-16/UTF-32 codepoint to a UTF-8 string.
 void EncodeAndAppendUTF8(std::string& s, char32_t ch);

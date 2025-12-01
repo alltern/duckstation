@@ -14,7 +14,6 @@
 #include "common/string_util.h"
 
 #include <QtCore/QDateTime>
-#include <QtWidgets/QMessageBox>
 
 #include "moc_achievementsettingswidget.cpp"
 
@@ -74,7 +73,7 @@ AchievementSettingsWidget::AchievementSettingsWidget(SettingsWindow* dialog, QWi
   dialog->registerWidgetHelp(
     m_ui.soundEffects, tr("Enable Sound Effects"), tr("Checked"),
     tr("Plays sound effects for events such as achievement unlocks and leaderboard submissions."));
-  dialog->registerWidgetHelp(m_ui.challengeIndicatorMode, tr("Challenge Indicators"), tr("Show Persistent Icons"),
+  dialog->registerWidgetHelp(m_ui.challengeIndicatorMode, tr("Challenge Indicators"), tr("Show Notifications"),
                              tr("Shows a notification or icons in the lower-right corner of the screen when a "
                                 "challenge/primed achievement is active."));
   dialog->registerWidgetHelp(
@@ -180,15 +179,12 @@ void AchievementSettingsWidget::onHardcoreModeStateChanged()
       return;
   }
 
-  if (QMessageBox::question(
-        QtUtils::GetRootWidget(this), tr("Reset System"),
-        tr("Hardcore mode will not be enabled until the system is reset. Do you want to reset the system now?")) !=
-      QMessageBox::Yes)
-  {
-    return;
-  }
-
-  g_emu_thread->resetSystem(true);
+  QMessageBox* const msgbox = QtUtils::NewMessageBox(
+    this, QMessageBox::Question, tr("Reset System"),
+    tr("Hardcore mode will not be enabled until the system is reset. Do you want to reset the system now?"),
+    QMessageBox::Yes | QMessageBox::No, QMessageBox::NoButton);
+  msgbox->connect(msgbox, &QMessageBox::accepted, this, []() { g_emu_thread->resetSystem(true); });
+  msgbox->open();
 }
 
 void AchievementSettingsWidget::onAchievementsNotificationDurationSliderChanged()
@@ -239,24 +235,23 @@ void AchievementSettingsWidget::onLoginLogoutPressed()
     return;
   }
 
-  AchievementLoginDialog login(this, Achievements::LoginRequestReason::UserInitiated);
-  if (login.exec() == QDialog::Rejected)
-    return;
+  AchievementLoginDialog* login = new AchievementLoginDialog(this, Achievements::LoginRequestReason::UserInitiated);
+  connect(login, &AchievementLoginDialog::accepted, this, &AchievementSettingsWidget::onLoginCompleted);
+  login->open();
+}
 
+void AchievementSettingsWidget::onLoginCompleted()
+{
   updateLoginState();
 
   // Login can enable achievements/hardcore.
   if (!m_ui.enable->isChecked() && Host::GetBaseBoolSettingValue("Cheevos", "Enabled", false))
   {
-    QSignalBlocker sb(m_ui.enable);
     m_ui.enable->setChecked(true);
     updateEnableState();
   }
   if (!m_ui.hardcoreMode->isChecked() && Host::GetBaseBoolSettingValue("Cheevos", "ChallengeMode", false))
-  {
-    QSignalBlocker sb(m_ui.hardcoreMode);
     m_ui.hardcoreMode->setChecked(true);
-  }
 }
 
 void AchievementSettingsWidget::onViewProfilePressed()

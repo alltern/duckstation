@@ -221,6 +221,9 @@ public:
   /// Returns true if the specified filename is a CD-ROM device name.
   static bool IsDeviceName(const char* filename);
 
+  /// Returns true if an overlayable patch file exists for the specified image path.
+  static bool HasOverlayablePatch(const char* path);
+
   // Opening disc image.
   static std::unique_ptr<CDImage> Open(const char* path, bool allow_patches, Error* error);
   static std::unique_ptr<CDImage> OpenBinImage(const char* path, Error* error);
@@ -230,10 +233,9 @@ public:
   static std::unique_ptr<CDImage> OpenPBPImage(const char* path, Error* error);
   static std::unique_ptr<CDImage> OpenM3uImage(const char* path, bool apply_patches, Error* error);
   static std::unique_ptr<CDImage> OpenDeviceImage(const char* path, Error* error);
-  static std::unique_ptr<CDImage>
-  CreateMemoryImage(CDImage* image, ProgressCallback* progress = ProgressCallback::NullProgressCallback);
+  static std::unique_ptr<CDImage> CreateMemoryImage(CDImage* image, ProgressCallback* progress, Error* error);
   static std::unique_ptr<CDImage> OverlayPPFPatch(const char* path, std::unique_ptr<CDImage> parent_image,
-                                                  ProgressCallback* progress = ProgressCallback::NullProgressCallback);
+                                                  Error* error);
 
   // Accessors.
   const std::string& GetPath() const { return m_filename; }
@@ -290,9 +292,6 @@ public:
   // Reads a single sector from an index.
   virtual bool ReadSectorFromIndex(void* buffer, const Index& index, LBA lba_in_index) = 0;
 
-  // Retrieve image metadata.
-  virtual std::string GetMetadata(std::string_view type) const;
-
   // Returns true if this image type has sub-images (e.g. m3u).
   virtual bool HasSubImages() const;
 
@@ -306,10 +305,10 @@ public:
   virtual bool SwitchSubImage(u32 index, Error* error);
 
   // Retrieve sub-image metadata.
-  virtual std::string GetSubImageMetadata(u32 index, std::string_view type) const;
+  virtual std::string GetSubImageTitle(u32 index) const;
 
   // Returns true if the source supports precaching, which may be more optimal than an in-memory copy.
-  virtual PrecacheResult Precache(ProgressCallback* progress = ProgressCallback::NullProgressCallback);
+  virtual PrecacheResult Precache(ProgressCallback* progress, Error* error);
   virtual bool IsPrecached() const;
 
   // Returns the size on disk of the image. This could be multiple files.

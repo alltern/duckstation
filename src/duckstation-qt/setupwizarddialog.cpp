@@ -3,6 +3,7 @@
 
 #include "setupwizarddialog.h"
 #include "achievementlogindialog.h"
+#include "biossettingswidget.h"
 #include "controllerbindingwidgets.h"
 #include "controllersettingwidgetbinder.h"
 #include "graphicssettingswidget.h"
@@ -13,6 +14,7 @@
 #include "settingwidgetbinder.h"
 
 #include "core/achievements.h"
+#include "core/bios.h"
 #include "core/controller.h"
 
 #include "util/input_manager.h"
@@ -21,8 +23,6 @@
 #include "common/string_util.h"
 
 #include "fmt/format.h"
-
-#include <QtWidgets/QMessageBox>
 
 #include "moc_setupwizarddialog.cpp"
 
@@ -45,8 +45,8 @@ bool SetupWizardDialog::canShowNextPage()
     {
       if (!BIOS::HasAnyBIOSImages())
       {
-        if (QMessageBox::question(
-              this, tr("Warning"),
+        if (QtUtils::MessageBoxQuestion(
+              this, tr("No BIOS Image Found"),
               tr("No BIOS images were found. DuckStation WILL NOT be able to run games without a BIOS image.\n\nAre "
                  "you sure you wish to continue without selecting a BIOS image?")) != QMessageBox::Yes)
         {
@@ -58,10 +58,10 @@ bool SetupWizardDialog::canShowNextPage()
 
     case Page_GameList:
     {
-      if (m_ui.searchDirectoryList->rowCount() == 0)
+      if (m_ui.searchDirectoryList->topLevelItemCount() == 0)
       {
-        if (QMessageBox::question(
-              this, tr("Warning"),
+        if (QtUtils::MessageBoxQuestion(
+              this, tr("No Game Directories Selected"),
               tr("No game directories have been selected. You will have to manually open any game dumps you "
                  "want to play, DuckStation's list will be empty.\n\nAre you sure you want to continue?")) !=
             QMessageBox::Yes)
@@ -132,9 +132,10 @@ void SetupWizardDialog::updatePageButtons()
 
 void SetupWizardDialog::confirmCancel()
 {
-  if (QMessageBox::question(this, tr("Cancel Setup"),
-                            tr("Are you sure you want to cancel DuckStation setup?\n\nAny changes have been saved, and "
-                               "the wizard will run again next time you start DuckStation.")) != QMessageBox::Yes)
+  if (QtUtils::MessageBoxQuestion(
+        this, tr("Cancel Setup"),
+        tr("Are you sure you want to cancel DuckStation setup?\n\nAny changes have been saved, and "
+           "the wizard will run again next time you start DuckStation.")) != QMessageBox::Yes)
   {
     return;
   }
@@ -146,9 +147,9 @@ void SetupWizardDialog::setupUi()
 {
   m_ui.setupUi(this);
 
-  m_ui.logo->setPixmap(
-    QPixmap(QString::fromUtf8(Path::Combine(EmuFolders::Resources, "images" FS_OSPATH_SEPARATOR_STR "duck.png"))));
-
+  const QPixmap app_logo = QtHost::GetAppLogo();
+  setWindowIcon(app_logo);
+  m_ui.logo->setPixmap(app_logo);
   m_ui.pages->setCurrentIndex(0);
 
   m_page_labels[Page_Language] = m_ui.labelLanguage;
@@ -238,24 +239,19 @@ void SetupWizardDialog::refreshBiosList()
 
 void SetupWizardDialog::setupGameListPage()
 {
-  m_ui.searchDirectoryList->setSelectionMode(QAbstractItemView::SingleSelection);
-  m_ui.searchDirectoryList->setSelectionBehavior(QAbstractItemView::SelectRows);
-  m_ui.searchDirectoryList->setAlternatingRowColors(true);
-  m_ui.searchDirectoryList->setShowGrid(false);
-  m_ui.searchDirectoryList->horizontalHeader()->setHighlightSections(false);
-  m_ui.searchDirectoryList->verticalHeader()->hide();
-  m_ui.searchDirectoryList->setCurrentIndex({});
   m_ui.searchDirectoryList->setContextMenuPolicy(Qt::ContextMenuPolicy::CustomContextMenu);
-  QtUtils::SetColumnWidthsForTableView(m_ui.searchDirectoryList, {-1, 100});
+  QtUtils::SetColumnWidthsForTreeView(m_ui.searchDirectoryList, {-1, 100});
 
-  connect(m_ui.searchDirectoryList, &QTableWidget::customContextMenuRequested, this,
+  connect(m_ui.searchDirectoryList, &QTreeWidget::customContextMenuRequested, this,
           &SetupWizardDialog::onDirectoryListContextMenuRequested);
   connect(m_ui.addSearchDirectoryButton, &QPushButton::clicked, this,
           &SetupWizardDialog::onAddSearchDirectoryButtonClicked);
   connect(m_ui.removeSearchDirectoryButton, &QPushButton::clicked, this,
           &SetupWizardDialog::onRemoveSearchDirectoryButtonClicked);
-  connect(m_ui.searchDirectoryList, &QTableWidget::itemSelectionChanged, this,
+  connect(m_ui.searchDirectoryList, &QTreeWidget::itemSelectionChanged, this,
           &SetupWizardDialog::onSearchDirectoryListSelectionChanged);
+  connect(m_ui.searchDirectoryList, &QTreeWidget::itemChanged, this,
+          &SetupWizardDialog::onSearchDirectoryListItemChanged);
 
   refreshDirectoryList();
 }
@@ -268,13 +264,16 @@ void SetupWizardDialog::onDirectoryListContextMenuRequested(const QPoint& point)
 
   const int row = selection[0].row();
 
-  QMenu menu;
-  menu.addAction(tr("Remove"), [this]() { onRemoveSearchDirectoryButtonClicked(); });
-  menu.addSeparator();
-  menu.addAction(tr("Open Directory..."), [this, row]() {
-    QtUtils::OpenURL(this, QUrl::fromLocalFile(m_ui.searchDirectoryList->item(row, 0)->text()));
+  QMenu* const menu = QtUtils::NewPopupMenu(this);
+  menu->addAction(QIcon::fromTheme("folder-reduce-line"), tr("Remove"), this,
+                  &SetupWizardDialog::onRemoveSearchDirectoryButtonClicked);
+  menu->addSeparator();
+  menu->addAction(QIcon::fromTheme("folder-open-line"), tr("Open Directory..."), [this, row]() {
+    const QTreeWidgetItem* const item = m_ui.searchDirectoryList->topLevelItem(row);
+    if (item)
+      QtUtils::OpenURL(this, QUrl::fromLocalFile(item->text(0)));
   });
-  menu.exec(m_ui.searchDirectoryList->mapToGlobal(point));
+  menu->popup(m_ui.searchDirectoryList->mapToGlobal(point));
 }
 
 void SetupWizardDialog::onAddSearchDirectoryButtonClicked()
@@ -284,13 +283,13 @@ void SetupWizardDialog::onAddSearchDirectoryButtonClicked()
   if (dir.isEmpty())
     return;
 
-  QMessageBox::StandardButton selection =
-    QMessageBox::question(this, tr("Scan Recursively?"),
-                          tr("Would you like to scan the directory \"%1\" recursively?\n\nScanning recursively takes "
-                             "more time, but will identify files in subdirectories.")
-                            .arg(dir),
-                          QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
-  if (selection == QMessageBox::Cancel)
+  QMessageBox::StandardButton selection = QtUtils::MessageBoxQuestion(
+    this, tr("Scan Recursively?"),
+    tr("Would you like to scan the directory \"%1\" recursively?\n\nScanning recursively takes "
+       "more time, but will identify files in subdirectories.")
+      .arg(dir),
+    QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+  if (selection != QMessageBox::Yes && selection != QMessageBox::No)
     return;
 
   const bool recursive = (selection == QMessageBox::Yes);
@@ -303,12 +302,14 @@ void SetupWizardDialog::onAddSearchDirectoryButtonClicked()
 
 void SetupWizardDialog::onRemoveSearchDirectoryButtonClicked()
 {
-  const int row = m_ui.searchDirectoryList->currentRow();
-  std::unique_ptr<QTableWidgetItem> item((row >= 0) ? m_ui.searchDirectoryList->takeItem(row, 0) : nullptr);
+  const QModelIndex index = m_ui.searchDirectoryList->currentIndex();
+  const QTreeWidgetItem* const item = m_ui.searchDirectoryList->takeTopLevelItem(index.row());
   if (!item)
     return;
 
-  const std::string spath = item->text().toStdString();
+  const std::string spath = item->text(0).toStdString();
+  delete item;
+
   if (!Host::RemoveValueFromBaseStringListSetting("GameList", "Paths", spath.c_str()) &&
       !Host::RemoveValueFromBaseStringListSetting("GameList", "RecursivePaths", spath.c_str()))
   {
@@ -324,41 +325,39 @@ void SetupWizardDialog::onSearchDirectoryListSelectionChanged()
   m_ui.removeSearchDirectoryButton->setEnabled(!m_ui.searchDirectoryList->selectedItems().isEmpty());
 }
 
+void SetupWizardDialog::onSearchDirectoryListItemChanged(QTreeWidgetItem* item, int column)
+{
+  if (column != 1)
+    return;
+
+  const std::string path = item->text(0).toStdString();
+  if (item->checkState(1) == Qt::Checked)
+  {
+    Host::RemoveValueFromBaseStringListSetting("GameList", "Paths", path.c_str());
+    Host::AddValueToBaseStringListSetting("GameList", "RecursivePaths", path.c_str());
+  }
+  else
+  {
+    Host::RemoveValueFromBaseStringListSetting("GameList", "RecursivePaths", path.c_str());
+    Host::AddValueToBaseStringListSetting("GameList", "Paths", path.c_str());
+  }
+
+  Host::CommitBaseSettingChanges();
+}
+
 void SetupWizardDialog::addPathToTable(const std::string& path, bool recursive)
 {
-  const int row = m_ui.searchDirectoryList->rowCount();
-  m_ui.searchDirectoryList->insertRow(row);
-
-  QTableWidgetItem* item = new QTableWidgetItem();
-  item->setText(QString::fromStdString(path));
-  item->setFlags(item->flags() & ~(Qt::ItemIsEditable));
-  m_ui.searchDirectoryList->setItem(row, 0, item);
-
-  QCheckBox* cb = new QCheckBox(m_ui.searchDirectoryList);
-  m_ui.searchDirectoryList->setCellWidget(row, 1, cb);
-  cb->setChecked(recursive);
-
-  connect(cb, &QCheckBox::checkStateChanged, [item](Qt::CheckState state) {
-    const std::string path(item->text().toStdString());
-    if (state == Qt::Checked)
-    {
-      Host::RemoveValueFromBaseStringListSetting("GameList", "Paths", path.c_str());
-      Host::AddValueToBaseStringListSetting("GameList", "RecursivePaths", path.c_str());
-    }
-    else
-    {
-      Host::RemoveValueFromBaseStringListSetting("GameList", "RecursivePaths", path.c_str());
-      Host::AddValueToBaseStringListSetting("GameList", "Paths", path.c_str());
-    }
-    Host::CommitBaseSettingChanges();
-  });
+  QTreeWidgetItem* const item = new QTreeWidgetItem();
+  item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+  item->setText(0, QString::fromStdString(path));
+  item->setCheckState(1, recursive ? Qt::Checked : Qt::Unchecked);
+  m_ui.searchDirectoryList->addTopLevelItem(item);
 }
 
 void SetupWizardDialog::refreshDirectoryList()
 {
   QSignalBlocker sb(m_ui.searchDirectoryList);
-  while (m_ui.searchDirectoryList->rowCount() > 0)
-    m_ui.searchDirectoryList->removeRow(0);
+  m_ui.searchDirectoryList->clear();
 
   std::vector<std::string> path_list = Host::GetBaseStringListSetting("GameList", "Paths");
   for (const std::string& entry : path_list)
@@ -380,7 +379,7 @@ void SetupWizardDialog::setupControllerPage(bool initial)
   {
     QComboBox* type_combo;
     QLabel* mapping_result;
-    QToolButton* mapping_button;
+    QPushButton* mapping_button;
   };
   const PadWidgets pad_widgets[NUM_PADS] = {
     {m_ui.controller1Type, m_ui.controller1Mapping, m_ui.controller1AutomaticMapping},
@@ -437,34 +436,29 @@ QString SetupWizardDialog::findCurrentDeviceForPort(u32 port) const
 
 void SetupWizardDialog::openAutomaticMappingMenu(u32 port, QLabel* update_label)
 {
-  QMenu menu(this);
+  QMenu* const menu = QtUtils::NewPopupMenu(this);
   bool added = false;
 
   for (const InputDeviceListModel::Device& dev : g_emu_thread->getInputDeviceListModel()->getDeviceList())
   {
     // we set it as data, because the device list could get invalidated while the menu is up
-    QAction* action = menu.addAction(QStringLiteral("%1 (%2)").arg(dev.identifier).arg(dev.display_name));
-    action->setIcon(InputDeviceListModel::getIconForKey(dev.key));
-    action->setData(dev.identifier);
-    connect(action, &QAction::triggered, this, [this, port, update_label, action]() {
-      doDeviceAutomaticBinding(port, update_label, action->data().toString());
-    });
+    menu->addAction(
+      InputDeviceListModel::getIconForKey(dev.key), QStringLiteral("%1 (%2)").arg(dev.identifier).arg(dev.display_name),
+      [this, port, update_label, device = dev.identifier]() { doDeviceAutomaticBinding(port, update_label, device); });
     added = true;
   }
 
   if (added)
   {
-    QAction* action = menu.addAction(tr("Multiple Devices..."));
-    connect(action, &QAction::triggered, this,
-            [this, port, update_label]() { doMultipleDeviceAutomaticBinding(port, update_label); });
+    menu->addAction(tr("Multiple Devices..."),
+                    [this, port, update_label]() { doMultipleDeviceAutomaticBinding(port, update_label); });
   }
   else
   {
-    QAction* action = menu.addAction(tr("No devices available"));
-    action->setEnabled(false);
+    menu->addAction(tr("No devices available"))->setEnabled(false);
   }
 
-  menu.exec(QCursor::pos());
+  menu->popup(QCursor::pos());
 }
 
 void SetupWizardDialog::doDeviceAutomaticBinding(u32 port, QLabel* update_label, const QString& device)
@@ -473,8 +467,8 @@ void SetupWizardDialog::doDeviceAutomaticBinding(u32 port, QLabel* update_label,
     InputManager::GetGenericBindingMapping(device.toStdString());
   if (mapping.empty())
   {
-    QMessageBox::critical(
-      this, tr("Automatic Binding"),
+    QtUtils::AsyncMessageBox(
+      this, QMessageBox::Critical, tr("Automatic Binding Failed"),
       tr("No generic bindings were generated for device '%1'. The controller/source may not support automatic "
          "mapping.")
         .arg(device));
@@ -496,10 +490,11 @@ void SetupWizardDialog::doDeviceAutomaticBinding(u32 port, QLabel* update_label,
 
 void SetupWizardDialog::doMultipleDeviceAutomaticBinding(u32 port, QLabel* update_label)
 {
-  if (!ControllerBindingWidget::doMultipleDeviceAutomaticBinding(this, nullptr, port))
-    return;
-
-  update_label->setText(findCurrentDeviceForPort(port));
+  QDialog* const dialog = new MultipleDeviceAutobindDialog(this, nullptr, port);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  connect(dialog, &QDialog::accepted, this,
+          [this, port, update_label] { update_label->setText(findCurrentDeviceForPort(port)); });
+  dialog->open();
 }
 
 void SetupWizardDialog::setupGraphicsPage(bool initial)
@@ -514,79 +509,52 @@ void SetupWizardDialog::setupGraphicsPage(bool initial)
   SettingWidgetBinder::DisconnectWidget(m_ui.spriteTextureFiltering);
   m_ui.spriteTextureFiltering->clear();
 
-  for (u32 i = 0; i < static_cast<u32>(GPUTextureFilter::Count); i++)
-  {
-    m_ui.textureFiltering->addItem(
-      QString::fromUtf8(Settings::GetTextureFilterDisplayName(static_cast<GPUTextureFilter>(i))));
-    m_ui.spriteTextureFiltering->addItem(
-      QString::fromUtf8(Settings::GetTextureFilterDisplayName(static_cast<GPUTextureFilter>(i))));
-  }
-
   SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.textureFiltering, "GPU", "TextureFilter",
                                                &Settings::ParseTextureFilterName, &Settings::GetTextureFilterName,
-                                               Settings::DEFAULT_GPU_TEXTURE_FILTER);
+                                               &Settings::GetTextureFilterDisplayName,
+                                               Settings::DEFAULT_GPU_TEXTURE_FILTER, GPUTextureFilter::Count);
   SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.spriteTextureFiltering, "GPU", "SpriteTextureFilter",
                                                &Settings::ParseTextureFilterName, &Settings::GetTextureFilterName,
-                                               Settings::DEFAULT_GPU_TEXTURE_FILTER);
+                                               &Settings::GetTextureFilterDisplayName,
+                                               Settings::DEFAULT_GPU_TEXTURE_FILTER, GPUTextureFilter::Count);
 
   SettingWidgetBinder::DisconnectWidget(m_ui.gpuDitheringMode);
   m_ui.gpuDitheringMode->clear();
 
-  for (u32 i = 0; i < static_cast<u32>(GPUDitheringMode::MaxCount); i++)
-  {
-    m_ui.gpuDitheringMode->addItem(
-      QString::fromUtf8(Settings::GetGPUDitheringModeDisplayName(static_cast<GPUDitheringMode>(i))));
-  }
-
   SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.gpuDitheringMode, "GPU", "DitheringMode",
                                                &Settings::ParseGPUDitheringModeName, &Settings::GetGPUDitheringModeName,
-                                               Settings::DEFAULT_GPU_DITHERING_MODE);
+                                               &Settings::GetGPUDitheringModeDisplayName,
+                                               Settings::DEFAULT_GPU_DITHERING_MODE, GPUDitheringMode::MaxCount);
 
   SettingWidgetBinder::DisconnectWidget(m_ui.displayAspectRatio);
   m_ui.displayAspectRatio->clear();
 
-  for (u32 i = 0; i < static_cast<u32>(DisplayAspectRatio::Count); i++)
-  {
-    m_ui.displayAspectRatio->addItem(
-      QString::fromUtf8(Settings::GetDisplayAspectRatioDisplayName(static_cast<DisplayAspectRatio>(i))));
-  }
-
-  SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.displayAspectRatio, "Display", "AspectRatio",
-                                               &Settings::ParseDisplayAspectRatio, &Settings::GetDisplayAspectRatioName,
-                                               Settings::DEFAULT_DISPLAY_ASPECT_RATIO);
-  SettingWidgetBinder::BindWidgetToIntSetting(nullptr, m_ui.customAspectRatioNumerator, "Display",
-                                              "CustomAspectRatioNumerator", 1);
-  SettingWidgetBinder::BindWidgetToIntSetting(nullptr, m_ui.customAspectRatioDenominator, "Display",
-                                              "CustomAspectRatioDenominator", 1);
-  connect(m_ui.displayAspectRatio, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-          &SetupWizardDialog::onGraphicsAspectRatioChanged);
-  onGraphicsAspectRatioChanged();
+  GraphicsSettingsWidget::createAspectRatioSetting(m_ui.displayAspectRatio, m_ui.customAspectRatioNumerator,
+                                                   m_ui.customAspectRatioSeparator, m_ui.customAspectRatioDenominator,
+                                                   nullptr);
 
   SettingWidgetBinder::DisconnectWidget(m_ui.displayCropMode);
   m_ui.displayCropMode->clear();
 
-  for (u32 i = 0; i < static_cast<u32>(DisplayCropMode::MaxCount); i++)
-  {
-    m_ui.displayCropMode->addItem(
-      QString::fromUtf8(Settings::GetDisplayCropModeDisplayName(static_cast<DisplayCropMode>(i))));
-  }
-
   SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.displayCropMode, "Display", "CropMode",
                                                &Settings::ParseDisplayCropMode, &Settings::GetDisplayCropModeName,
-                                               Settings::DEFAULT_DISPLAY_CROP_MODE);
+                                               &Settings::GetDisplayCropModeDisplayName,
+                                               Settings::DEFAULT_DISPLAY_CROP_MODE, DisplayCropMode::MaxCount);
 
   SettingWidgetBinder::DisconnectWidget(m_ui.displayScaling);
   m_ui.displayScaling->clear();
 
-  for (u32 i = 0; i < static_cast<u32>(DisplayScalingMode::Count); i++)
-  {
-    m_ui.displayScaling->addItem(
-      QString::fromUtf8(Settings::GetDisplayScalingDisplayName(static_cast<DisplayScalingMode>(i))));
-  }
-
   SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.displayScaling, "Display", "Scaling",
                                                &Settings::ParseDisplayScaling, &Settings::GetDisplayScalingName,
-                                               Settings::DEFAULT_DISPLAY_SCALING);
+                                               &Settings::GetDisplayScalingDisplayName,
+                                               Settings::DEFAULT_DISPLAY_SCALING, DisplayScalingMode::Count);
+
+  SettingWidgetBinder::DisconnectWidget(m_ui.displayScaling24Bit);
+  m_ui.displayScaling24Bit->clear();
+  SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.displayScaling24Bit, "Display", "Scaling24Bit",
+                                               &Settings::ParseDisplayScaling, &Settings::GetDisplayScalingName,
+                                               &Settings::GetDisplayScalingDisplayName,
+                                               Settings::DEFAULT_DISPLAY_SCALING, DisplayScalingMode::Count);
 
   if (initial)
   {
@@ -595,28 +563,11 @@ void SetupWizardDialog::setupGraphicsPage(bool initial)
   }
 }
 
-void SetupWizardDialog::onGraphicsAspectRatioChanged()
-{
-  const DisplayAspectRatio ratio =
-    Settings::ParseDisplayAspectRatio(
-      Host::GetBaseStringSettingValue("Display", "AspectRatio",
-                                      Settings::GetDisplayAspectRatioName(Settings::DEFAULT_DISPLAY_ASPECT_RATIO))
-        .c_str())
-      .value_or(Settings::DEFAULT_DISPLAY_ASPECT_RATIO);
-
-  const bool is_custom = (ratio == DisplayAspectRatio::Custom);
-
-  m_ui.customAspectRatioNumerator->setVisible(is_custom);
-  m_ui.customAspectRatioDenominator->setVisible(is_custom);
-  m_ui.customAspectRatioSeparator->setVisible(is_custom);
-}
-
 void SetupWizardDialog::setupAchievementsPage(bool initial)
 {
   if (initial)
   {
-    m_ui.achievementsIconLabel->setPixmap(
-      QPixmap(QString::fromStdString(QtHost::GetResourcePath("images/ra-icon.webp", true))));
+    m_ui.achievementsIconLabel->setPixmap(QPixmap(QtHost::GetResourceQPath("images/ra-icon.webp", true)));
     QFont title_font(m_ui.achievementsTitleLabel->font());
     title_font.setBold(true);
     title_font.setPixelSize(20);
@@ -648,11 +599,10 @@ void SetupWizardDialog::updateAchievementsLoginState()
   {
     const u64 login_unix_timestamp =
       StringUtil::FromChars<u64>(Host::GetBaseStringSettingValue("Cheevos", "LoginTimestamp", "0")).value_or(0);
-    const QString login_timestamp = QtHost::FormatNumber(Host::NumberFormatType::ShortDateTime,
-                                                         static_cast<s64>(login_unix_timestamp));
-    m_ui.loginStatus->setText(tr("Username: %1\nLogin token generated on %2.")
-                                .arg(QString::fromStdString(username))
-                                .arg(login_timestamp));
+    const QString login_timestamp =
+      QtHost::FormatNumber(Host::NumberFormatType::ShortDateTime, static_cast<s64>(login_unix_timestamp));
+    m_ui.loginStatus->setText(
+      tr("Username: %1\nLogin token generated on %2.").arg(QString::fromStdString(username)).arg(login_timestamp));
     m_ui.loginButton->setText(tr("Logout"));
   }
   else
@@ -673,26 +623,24 @@ void SetupWizardDialog::onAchievementsLoginLogoutClicked()
     return;
   }
 
-  AchievementLoginDialog login(this, Achievements::LoginRequestReason::UserInitiated);
-  int res = login.exec();
-  if (res == QDialog::Rejected)
-    return;
+  AchievementLoginDialog* login = new AchievementLoginDialog(this, Achievements::LoginRequestReason::UserInitiated);
+  connect(login, &AchievementLoginDialog::accepted, this, &SetupWizardDialog::onAchievementsLoginCompleted);
+  login->open();
+}
 
+void SetupWizardDialog::onAchievementsLoginCompleted()
+{
   updateAchievementsEnableState();
   updateAchievementsLoginState();
 
   // Login can enable achievements/hardcore.
   if (!m_ui.enable->isChecked() && Host::GetBaseBoolSettingValue("Cheevos", "Enabled", false))
   {
-    QSignalBlocker sb(m_ui.enable);
     m_ui.enable->setChecked(true);
     updateAchievementsLoginState();
   }
   if (!m_ui.hardcoreMode->isChecked() && Host::GetBaseBoolSettingValue("Cheevos", "ChallengeMode", false))
-  {
-    QSignalBlocker sb(m_ui.hardcoreMode);
     m_ui.hardcoreMode->setChecked(true);
-  }
 }
 
 void SetupWizardDialog::onAchievementsViewProfileClicked()

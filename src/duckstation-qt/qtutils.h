@@ -14,6 +14,7 @@
 #include <QtCore/QString>
 #include <QtCore/QTimer>
 #include <QtGui/QIcon>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QWidget>
 #include <functional>
 #include <initializer_list>
@@ -25,6 +26,7 @@ class QComboBox;
 class QFrame;
 class QKeyEvent;
 class QLabel;
+class QMenu;
 class QSlider;
 class QTableView;
 class QTreeView;
@@ -52,7 +54,8 @@ QFrame* CreateHorizontalLine(QWidget* parent);
 QWidget* GetRootWidget(QWidget* widget, bool stop_at_window_or_dialog = true);
 
 /// Shows or raises a window (brings it to the front).
-void ShowOrRaiseWindow(QWidget* window);
+/// If the window was hidden and parent_window is provided, the window is centered on parent_window.
+void ShowOrRaiseWindow(QWidget* window, const QWidget* parent_window = nullptr, bool restore_geometry = false);
 
 /// Closes and deletes a window later, outside of this event pump.
 template<typename T>
@@ -77,8 +80,7 @@ void SetColumnWidthsForTableView(QTableView* view, const std::initializer_list<i
 void SetColumnWidthsForTreeView(QTreeView* view, const std::initializer_list<int>& widths);
 
 /// Returns a key id for a key event, including any modifiers that we need (e.g. Keypad).
-/// NOTE: Defined in QtKeyCodes.cpp, not QtUtils.cpp.
-u32 KeyEventToCode(const QKeyEvent* ev);
+std::optional<u32> KeyEventToCode(const QKeyEvent* ev);
 
 /// Opens a URL with the default handler.
 void OpenURL(QWidget* parent, const QUrl& qurl);
@@ -92,6 +94,9 @@ std::optional<unsigned> PromptForAddress(QWidget* parent, const QString& title, 
 /// Converts a std::string_view to a QString safely.
 QString StringViewToQString(std::string_view str);
 
+/// Ensures line endings are normalized in \n format.
+QString NormalizeLineEndings(QString str);
+
 /// Sets a widget to italics if the setting value is inherited.
 void SetWidgetFontForInheritedSetting(QWidget* widget, bool inherited);
 
@@ -103,6 +108,37 @@ void SetWindowResizeable(QWidget* widget, bool resizeable);
 
 /// Adjusts the fixed size for a window if it's not resizeable.
 void ResizePotentiallyFixedSizeWindow(QWidget* widget, int width, int height);
+
+/// Replacement for QMessageBox::question() and friends that doesn't look terrible on MacOS.
+QMessageBox::StandardButton MessageBoxInformation(QWidget* parent, const QString& title, const QString& text,
+                                                  QMessageBox::StandardButtons buttons = QMessageBox::Ok,
+                                                  QMessageBox::StandardButton defaultButton = QMessageBox::NoButton);
+QMessageBox::StandardButton MessageBoxWarning(QWidget* parent, const QString& title, const QString& text,
+                                              QMessageBox::StandardButtons buttons = QMessageBox::Ok,
+                                              QMessageBox::StandardButton defaultButton = QMessageBox::NoButton);
+QMessageBox::StandardButton MessageBoxCritical(QWidget* parent, const QString& title, const QString& text,
+                                               QMessageBox::StandardButtons buttons = QMessageBox::Ok,
+                                               QMessageBox::StandardButton defaultButton = QMessageBox::NoButton);
+QMessageBox::StandardButton MessageBoxQuestion(
+  QWidget* parent, const QString& title, const QString& text,
+  QMessageBox::StandardButtons buttons = QMessageBox::StandardButtons(QMessageBox::Yes | QMessageBox::No),
+  QMessageBox::StandardButton defaultButton = QMessageBox::NoButton);
+QMessageBox::StandardButton MessageBoxIcon(QWidget* parent, QMessageBox::Icon icon, const QString& title,
+                                           const QString& text, QMessageBox::StandardButtons buttons,
+                                           QMessageBox::StandardButton defaultButton);
+QMessageBox* NewMessageBox(QWidget* parent, QMessageBox::Icon icon, const QString& title, const QString& text,
+                           QMessageBox::StandardButtons buttons,
+                           QMessageBox::StandardButton defaultButton = QMessageBox::NoButton,
+                           bool delete_on_close = true);
+void AsyncMessageBox(QWidget* parent, QMessageBox::Icon icon, const QString& title, const QString& text,
+                     QMessageBox::StandardButtons button = QMessageBox::Ok);
+
+/// Styles a popup menu for the current theme.
+void StylePopupMenu(QMenu* menu);
+void StyleChildMenus(QWidget* widget);
+
+/// Creates a new popup menu, styled for the current theme.
+QMenu* NewPopupMenu(QWidget* parent, bool delete_on_close = true);
 
 /// Returns icon for language.
 QIcon GetIconForTranslationLanguage(std::string_view language_name);
@@ -116,17 +152,33 @@ QIcon GetIconForEntryType(GameList::EntryType type);
 QIcon GetIconForCompatibility(GameDatabase::CompatibilityRating rating);
 QIcon GetIconForLanguage(std::string_view language_name);
 
-/// Returns the pixel ratio/scaling factor for a widget.
-qreal GetDevicePixelRatioForWidget(const QWidget* widget);
+/// Scales a Memory Card Icon (QPixmap or QImage) using Sharp Bilinear scaling
+void ResizeSharpBilinear(QPixmap& pm, int size, int base_size);
+void ResizeSharpBilinear(QImage& pm, int size, int base_size);
+
+/// Applies the device pixel ratio to the given size, giving the size in pixels.
+QSize ApplyDevicePixelRatioToSize(const QSize& size, qreal device_pixel_ratio);
+
+/// Removes the device pixel ratio from the given size, giving the size in device-independent units.
+QSize GetDeviceIndependentSize(const QSize& size, qreal device_pixel_ratio);
+
+/// Returns the pixel size (real geometry) for a widget.
+/// Also returns the "real" DPR scale for the widget, ignoring any operating-system level downsampling.
+std::pair<QSize, qreal> GetPixelSizeForWidget(const QWidget* widget);
 
 /// Returns the common window info structure for a Qt widget.
 std::optional<WindowInfo> GetWindowInfoForWidget(QWidget* widget, RenderAPI render_api, Error* error = nullptr);
 
 /// Saves a window's geometry to configuration. Returns false if the configuration was changed.
+void SaveWindowGeometry(QWidget* widget, bool auto_commit_changes = true);
 void SaveWindowGeometry(std::string_view window_name, QWidget* widget, bool auto_commit_changes = true);
 
 /// Restores a window's geometry from configuration. Returns false if it was not found in the configuration.
+bool RestoreWindowGeometry(QWidget* widget);
 bool RestoreWindowGeometry(std::string_view window_name, QWidget* widget);
+
+/// Positions a window in the center of its parent or the screen.
+void CenterWindowRelativeToParent(QWidget* window, const QWidget* parent_window);
 
 /// CPU-friendly way of blocking the UI thread while some predicate holds true.
 template<typename Predicate>

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+# SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 # SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 SCRIPTDIR=$(dirname "${BASH_SOURCE[0]}")
@@ -27,7 +27,7 @@ fi
 ROOTDIR=$1
 BUILDDIR=$2
 DEPSDIR=$3
-NAME=$4
+ASSETNAME=$4
 
 BINARY=duckstation-qt
 APPDIRNAME=DuckStation.AppDir
@@ -35,19 +35,16 @@ STRIP=strip
 
 declare -a MANUAL_LIBS=(
 	"libz.so.1"
-	"libavcodec.so.61"
-	"libavformat.so.61"
-	"libavutil.so.59"
-	"libswscale.so.8"
-	"libswresample.so.5"
+	"libavcodec.so.62"
+	"libavformat.so.62"
+	"libavutil.so.60"
+	"libswscale.so.9"
+	"libswresample.so.6"
 	"libdiscord-rpc.so"
+	"libharfbuzz.so"
 	"libfreetype.so.6"
 	"libshaderc_ds.so"
 	"libspirv-cross-c-shared.so.0"
-)
-
-declare -a MANUAL_QT_LIBS=(
-	"libQt6WaylandEglClientHwIntegration.so.6"
 )
 
 declare -a MANUAL_QT_PLUGINS=(
@@ -123,7 +120,7 @@ done
 
 echo "Running linuxdeploy to create AppDir..."
 EXTRA_QT_PLUGINS="core;gui;svg;waylandclient;widgets;xcbqpa" \
-EXTRA_PLATFORM_PLUGINS="libqwayland-egl.so;libqwayland-generic.so" \
+EXTRA_PLATFORM_PLUGINS="libqwayland.so" \
 DEPLOY_PLATFORM_THEMES="1" \
 QMAKE="$DEPSDIR/bin/qmake" \
 NO_STRIP="1" \
@@ -135,16 +132,6 @@ echo "Copying resources into AppDir..."
 cp -a "$BUILDDIR/bin/resources" "$OUTDIR/usr/bin"
 
 # LinuxDeploy's Qt plugin doesn't include Wayland support. So manually copy in the additional Wayland libraries.
-echo "Copying Qt Wayland libraries..."
-for lib in "${MANUAL_QT_LIBS[@]}"; do
-	srcpath="$DEPSDIR/lib/$lib"
-	dstpath="$OUTDIR/usr/lib/$lib"
-	echo "  $srcpath -> $dstpath"
-	cp "$srcpath" "$dstpath"
-	$PATCHELF --set-rpath '$ORIGIN' "$dstpath"
-done
-
-# .. and plugins.
 echo "Copying Qt Wayland plugins..."
 for GROUP in "${MANUAL_QT_PLUGINS[@]}"; do
 	srcpath="$DEPSDIR/plugins/$GROUP"
@@ -187,5 +174,5 @@ mkdir -p "$OUTDIR/usr/share/metainfo"
 "$SCRIPTDIR/../generate-metainfo.sh" "$OUTDIR/usr/share/metainfo"
 
 echo "Generating AppImage..."
-rm -f "$NAME.AppImage"
-"$APPIMAGETOOL" -v --runtime-file "$APPIMAGERUNTIME" "$OUTDIR" "$NAME.AppImage"
+rm -f "$ASSETNAME"
+"$APPIMAGETOOL" -v --runtime-file "$APPIMAGERUNTIME" "$OUTDIR" "$ASSETNAME"

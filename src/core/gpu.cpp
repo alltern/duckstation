@@ -68,12 +68,6 @@ static TimingEvent s_command_tick_event(
 static TimingEvent s_frame_done_event(
   "Frame Done", 1, 1, [](void* param, TickCount ticks, TickCount ticks_late) { g_gpu.FrameDoneEvent(ticks); }, nullptr);
 
-// #define PSX_GPU_STATS
-#ifdef PSX_GPU_STATS
-static u64 s_active_gpu_cycles = 0;
-static u32 s_active_gpu_cycles_frames = 0;
-#endif
-
 GPU::GPU() = default;
 
 GPU::~GPU() = default;
@@ -84,16 +78,10 @@ void GPU::Initialize()
     s_crtc_tick_event.Activate();
 
   m_force_progressive_scan = (g_settings.display_deinterlacing_mode == DisplayDeinterlacingMode::Progressive);
-  m_force_frame_timings = g_settings.gpu_force_video_timing;
   m_fifo_size = g_settings.gpu_fifo_size;
   m_max_run_ahead = g_settings.gpu_max_run_ahead;
   m_console_is_pal = System::IsPALRegion();
   UpdateCRTCConfig();
-
-#ifdef PSX_GPU_STATS
-  s_active_gpu_cycles = 0;
-  s_active_gpu_cycles_frames = 0;
-#endif
 }
 
 void GPU::Shutdown()
@@ -111,13 +99,16 @@ void GPU::UpdateSettings(const Settings& old_settings)
   m_fifo_size = g_settings.gpu_fifo_size;
   m_max_run_ahead = g_settings.gpu_max_run_ahead;
 
-  if (m_force_frame_timings != g_settings.gpu_force_video_timing)
+  if (g_settings.gpu_force_video_timing != old_settings.gpu_force_video_timing)
   {
-    m_force_frame_timings = g_settings.gpu_force_video_timing;
     m_console_is_pal = System::IsPALRegion();
     UpdateCRTCConfig();
   }
-  else if (g_settings.display_crop_mode != old_settings.display_crop_mode)
+  else if (g_settings.display_crop_mode != old_settings.display_crop_mode ||
+           g_settings.display_active_start_offset != old_settings.display_active_start_offset ||
+           g_settings.display_active_end_offset != old_settings.display_active_end_offset ||
+           g_settings.display_line_start_offset != old_settings.display_line_start_offset ||
+           g_settings.display_line_end_offset != old_settings.display_line_end_offset)
   {
     // Crop mode calls this, so recalculate the display area
     UpdateCRTCDisplayParameters();
@@ -162,7 +153,7 @@ std::tuple<u32, u32> GPU::GetFullDisplayResolution() const
     height =
       static_cast<u32>(std::max<s32>(
         std::clamp<s32>(m_crtc_state.regs.Y2, ymin, ymax) - std::clamp<s32>(m_crtc_state.regs.Y1, ymin, ymax), 0))
-      << BoolToUInt8(m_GPUSTAT.vertical_interlace && m_GPUSTAT.vertical_resolution);
+      << BoolToUInt8(m_GPUSTAT.vertical_interlace);
   }
 
   return std::tie(width, height);
@@ -184,6 +175,7 @@ void GPU::Reset(bool clear_vram)
 
   // Cancel VRAM writes.
   m_blitter_state = BlitterState::Idle;
+  m_active_ticks_since_last_update = 0;
 
   // Force event to reschedule itself.
   s_crtc_tick_event.Deactivate();
@@ -306,7 +298,7 @@ bool GPU::DoState(StateWrapper& sw)
   sw.Do(&m_crtc_state.vertical_display_end);
   sw.Do(&m_crtc_state.fractional_ticks);
   sw.Do(&m_crtc_state.current_tick_in_scanline);
-  sw.Do(&m_crtc_state.current_scanline);
+  m_crtc_state.current_scanline = Truncate16(sw.DoValue(static_cast<u32>(m_crtc_state.current_scanline)));
   sw.DoEx(&m_crtc_state.fractional_dot_ticks, 46, 0);
   sw.Do(&m_crtc_state.in_hblank);
   sw.Do(&m_crtc_state.in_vblank);
@@ -347,8 +339,12 @@ bool GPU::DoState(StateWrapper& sw)
   sw.Do(&m_blit_remaining_words);
   sw.Do(&m_render_command.bits);
 
-  sw.Do(&m_max_run_ahead);
-  sw.Do(&m_fifo_size);
+  if (sw.GetVersion() < 83) [[unlikely]]
+  {
+    // Removed in v83
+    DebugAssert(sw.IsReading());
+    sw.SkipBytes(sizeof(u32) * 2);
+  }
 
   if (!sw.DoMarker("GPU-VRAM"))
     return false;
@@ -621,9 +617,7 @@ TickCount GPU::SystemTicksToCRTCTicks(TickCount sysclk_ticks, TickCount* fractio
 void GPU::AddCommandTicks(TickCount ticks)
 {
   m_pending_command_ticks += ticks;
-#ifdef PSX_GPU_STATS
-  s_active_gpu_cycles += ticks;
-#endif
+  m_active_ticks_since_last_update += ticks;
 }
 
 void GPU::SynchronizeCRTC()
@@ -650,57 +644,42 @@ float GPU::ComputeVerticalFrequency() const
     static_cast<double>(ticks_per_frame));
 }
 
-float GPU::ComputeDisplayAspectRatio() const
+float GPU::ComputePixelAspectRatio() const
 {
-  // Display off => Doesn't matter.
-  if (m_crtc_state.display_width == 0 || m_crtc_state.display_height == 0)
-    return 4.0f / 3.0f;
+  float sar = (m_crtc_state.display_width > 0 && m_crtc_state.display_height > 0) ?
+                static_cast<float>(m_crtc_state.display_width) / static_cast<float>(m_crtc_state.display_height) :
+                1.0f;
 
-  // PAR 1:1 is not corrected.
-  if (g_settings.display_aspect_ratio == DisplayAspectRatio::PAR1_1)
-    return static_cast<float>(m_crtc_state.display_width) / static_cast<float>(m_crtc_state.display_height);
-
-  float ar = 4.0f / 3.0f;
-  if (!g_settings.display_force_4_3_for_24bit || !m_GPUSTAT.display_area_color_depth_24)
+  // Force 4:3 for 24-bit modes option.
+  const DisplayAspectRatio dar_type =
+    (!g_settings.display_force_4_3_for_24bit || !m_GPUSTAT.display_area_color_depth_24) ?
+      g_settings.display_aspect_ratio :
+      DisplayAspectRatio::Auto();
+  float dar = 4.0f / 3.0f;
+  if (dar_type == DisplayAspectRatio::PAR1_1())
   {
-    if (g_settings.display_aspect_ratio == DisplayAspectRatio::MatchWindow)
+    dar = sar;
+  }
+  else if (dar_type == DisplayAspectRatio::Stretch())
+  {
+    const WindowInfo& wi = GPUThread::GetRenderWindowInfo();
+    if (!wi.IsSurfaceless() && wi.surface_width > 0 && wi.surface_height > 0)
     {
-      const WindowInfo& wi = GPUThread::GetRenderWindowInfo();
-      if (!wi.IsSurfaceless() && wi.surface_width > 0 && wi.surface_height > 0)
-        ar = static_cast<float>(wi.surface_width) / static_cast<float>(wi.surface_height);
+      // Correction is applied to the GTE for stretch to fit, that way it fills the window.
+      dar = static_cast<float>(wi.surface_width) / static_cast<float>(wi.surface_height);
     }
-    else if (g_settings.display_aspect_ratio == DisplayAspectRatio::Custom)
+  }
+  else
+  {
+    sar /= ComputeAspectRatioCorrection();
+    if (dar_type != DisplayAspectRatio::Auto())
     {
-      ar = static_cast<float>(g_settings.display_aspect_ratio_custom_numerator) /
-           static_cast<float>(g_settings.display_aspect_ratio_custom_denominator);
-    }
-    else
-    {
-      ar = g_settings.GetDisplayAspectRatioValue();
+      dar = static_cast<float>(g_settings.display_aspect_ratio.numerator) /
+            static_cast<float>(g_settings.display_aspect_ratio.denominator);
     }
   }
 
-  return ar;
-}
-
-float GPU::ComputeSourceAspectRatio() const
-{
-  const float source_aspect_ratio =
-    static_cast<float>(m_crtc_state.display_width) / static_cast<float>(m_crtc_state.display_height);
-
-  // Correction is applied to the GTE for stretch to fit, that way it fills the window.
-  const float source_aspect_ratio_correction =
-    (g_settings.display_aspect_ratio == DisplayAspectRatio::MatchWindow) ? 1.0f : ComputeAspectRatioCorrection();
-
-  return source_aspect_ratio / source_aspect_ratio_correction;
-}
-
-float GPU::ComputePixelAspectRatio() const
-{
-  const float dar = ComputeDisplayAspectRatio();
-  const float sar = ComputeSourceAspectRatio();
-  const float par = dar / sar;
-  return par;
+  return (dar / sar);
 }
 
 float GPU::ComputeAspectRatioCorrection() const
@@ -708,7 +687,7 @@ float GPU::ComputeAspectRatioCorrection() const
   const CRTCState& cs = m_crtc_state;
   float relative_width = static_cast<float>(cs.horizontal_visible_end - cs.horizontal_visible_start);
   float relative_height = static_cast<float>(cs.vertical_visible_end - cs.vertical_visible_start);
-  if (relative_width <= 0 || relative_height <= 0 || g_settings.display_aspect_ratio == DisplayAspectRatio::PAR1_1)
+  if (relative_width <= 0 || relative_height <= 0 || g_settings.display_aspect_ratio == DisplayAspectRatio::PAR1_1())
     return 1.0f;
 
   // Apply aspect ratio correction for all borders, or overscan with altered display range.
@@ -789,7 +768,7 @@ void GPU::UpdateCRTCConfig()
   cs.vertical_display_start = std::min<u16>(cs.regs.Y1, cs.vertical_total);
   cs.vertical_display_end = std::min<u16>(cs.regs.Y2, cs.vertical_total);
 
-  if (m_GPUSTAT.pal_mode && m_force_frame_timings == ForceVideoTimingMode::NTSC)
+  if (m_GPUSTAT.pal_mode && g_settings.gpu_force_video_timing == ForceVideoTimingMode::NTSC)
   {
     // scale to NTSC parameters
     cs.horizontal_display_start =
@@ -807,7 +786,7 @@ void GPU::UpdateCRTCConfig()
     cs.horizontal_total = NTSC_TICKS_PER_LINE;
     cs.current_tick_in_scanline %= NTSC_TICKS_PER_LINE;
   }
-  else if (!m_GPUSTAT.pal_mode && m_force_frame_timings == ForceVideoTimingMode::PAL)
+  else if (!m_GPUSTAT.pal_mode && g_settings.gpu_force_video_timing == ForceVideoTimingMode::PAL)
   {
     // scale to PAL parameters
     cs.horizontal_display_start =
@@ -1188,9 +1167,9 @@ void GPU::CRTCTickEvent(TickCount ticks)
   while (lines_to_draw > 0)
   {
     const u32 lines_to_draw_this_loop =
-      std::min(lines_to_draw, m_crtc_state.vertical_total - m_crtc_state.current_scanline);
+      std::min(lines_to_draw, static_cast<u32>(m_crtc_state.vertical_total - m_crtc_state.current_scanline));
     const u32 prev_scanline = m_crtc_state.current_scanline;
-    m_crtc_state.current_scanline += lines_to_draw_this_loop;
+    m_crtc_state.current_scanline = Truncate16(m_crtc_state.current_scanline + lines_to_draw_this_loop);
     DebugAssert(m_crtc_state.current_scanline <= m_crtc_state.vertical_total);
     lines_to_draw -= lines_to_draw_this_loop;
 
@@ -1229,20 +1208,6 @@ void GPU::CRTCTickEvent(TickCount ticks)
           m_crtc_state.interlaced_display_field = m_crtc_state.interlaced_field ^ 1u;
         else
           m_crtc_state.interlaced_display_field = 0;
-
-#ifdef PSX_GPU_STATS
-        if ((++s_active_gpu_cycles_frames) == 60)
-        {
-          const double busy_frac =
-            static_cast<double>(s_active_gpu_cycles) /
-            static_cast<double>(SystemTicksToGPUTicks(System::ScaleTicksToOverclock(System::MASTER_CLOCK)) *
-                                (ComputeVerticalFrequency() / 60.0f));
-          DEV_LOG("PSX GPU Usage: {:.2f}% [{:.0f} cycles avg per frame]", busy_frac * 100,
-                  static_cast<double>(s_active_gpu_cycles) / static_cast<double>(s_active_gpu_cycles_frames));
-          s_active_gpu_cycles = 0;
-          s_active_gpu_cycles_frames = 0;
-        }
-#endif
       }
 
       Timers::SetGate(HBLANK_TIMER_INDEX, new_vblank);
@@ -1258,7 +1223,7 @@ void GPU::CRTCTickEvent(TickCount ticks)
       if (m_GPUSTAT.vertical_interlace)
       {
         m_crtc_state.interlaced_field ^= 1u;
-        m_GPUSTAT.interlaced_field = !m_crtc_state.interlaced_field;
+        m_GPUSTAT.interlaced_field = BoolToUInt8(!ConvertToBoolUnchecked(m_crtc_state.interlaced_field));
       }
       else
       {
@@ -1328,6 +1293,26 @@ void GPU::UpdateCommandTickEvent()
   {
     s_command_tick_event.SetIntervalAndSchedule(GPUTicksToSystemTicks(m_pending_command_ticks));
   }
+}
+
+u8 GPU::UpdateOrGetGPUBusyPct()
+{
+  const u32 frame_number = System::GetFrameNumber();
+  if ((m_GPUSTAT.pal_mode ? (frame_number % 50) : (frame_number % 60)) != 0) [[likely]]
+    return m_last_gpu_busy_pct;
+
+  const double busy_frac =
+    static_cast<double>(m_active_ticks_since_last_update) /
+    static_cast<double>(SystemTicksToGPUTicks(System::ScaleTicksToOverclock(System::MASTER_CLOCK)) *
+                        (ComputeVerticalFrequency() / (m_GPUSTAT.pal_mode ? 50.0f : 60.0f)));
+  const double usage_pct = busy_frac * 100.0;
+
+  DEBUG_LOG("PSX GPU Usage: {:.2f}% [{:.0f} cycles avg per frame]", usage_pct,
+            static_cast<double>(m_active_ticks_since_last_update) / (m_GPUSTAT.pal_mode ? 50.0f : 60.0f));
+  m_active_ticks_since_last_update = 0;
+
+  m_last_gpu_busy_pct = static_cast<u8>(std::min<double>(std::round(usage_pct), 100));
+  return m_last_gpu_busy_pct;
 }
 
 void GPU::ConvertScreenCoordinatesToDisplayCoordinates(float window_x, float window_y, float* display_x,
@@ -1511,9 +1496,6 @@ void GPU::WriteGP1(u32 value)
       const bool disable = ConvertToBoolUnchecked(value & 0x01);
       DEBUG_LOG("Display {}", disable ? "disabled" : "enabled");
       SynchronizeCRTC();
-
-      if (!m_GPUSTAT.display_disable && disable && IsInterlacedDisplayEnabled())
-        ClearDisplay();
 
       m_GPUSTAT.display_disable = disable;
     }
@@ -1951,6 +1933,11 @@ void GPU::UpdateDisplay(bool submit_frame)
   const bool interlaced = IsInterlacedDisplayEnabled();
   const u8 interlaced_field = GetInterlacedDisplayField();
   const bool line_skip = (interlaced && m_GPUSTAT.vertical_resolution);
+
+  // NOTE: Must be split out, since this can push commands itself (e.g. media capture).
+  GPUBackendFramePresentationParameters frame;
+  submit_frame = (submit_frame && System::GetFramePresentationParameters(&frame));
+
   GPUBackendUpdateDisplayCommand* cmd = GPUBackend::NewUpdateDisplayCommand();
   cmd->display_width = m_crtc_state.display_width;
   cmd->display_height = m_crtc_state.display_height;
@@ -1961,6 +1948,7 @@ void GPU::UpdateDisplay(bool submit_frame)
   cmd->display_vram_width = m_crtc_state.display_vram_width;
   cmd->display_vram_height = m_crtc_state.display_vram_height >> BoolToUInt8(interlaced);
   cmd->X = m_crtc_state.regs.X;
+  cmd->gpu_busy_pct = g_settings.display_show_gpu_stats ? UpdateOrGetGPUBusyPct() : 0;
   cmd->interlaced_display_enabled = interlaced;
   cmd->interlaced_display_field = ConvertToBoolUnchecked(interlaced_field);
   cmd->interlaced_display_interleaved = line_skip;
@@ -1968,8 +1956,10 @@ void GPU::UpdateDisplay(bool submit_frame)
   cmd->display_24bit = m_GPUSTAT.display_area_color_depth_24;
   cmd->display_disabled = IsDisplayDisabled();
   cmd->display_pixel_aspect_ratio = ComputePixelAspectRatio();
-  if ((cmd->submit_frame = submit_frame && System::GetFramePresentationParameters(&cmd->frame)))
+  if ((cmd->submit_frame = submit_frame))
   {
+    std::memcpy(&cmd->frame, &frame, sizeof(frame));
+
     const bool drain_one = cmd->frame.present_frame && GPUBackend::BeginQueueFrame();
     GPUThread::PushCommandAndWakeThread(cmd);
     if (drain_one)
@@ -1985,15 +1975,20 @@ void GPU::QueuePresentCurrentFrame()
 {
   DebugAssert(g_settings.IsRunaheadEnabled());
 
+  // NOTE: Must be split out, since this can push commands itself (e.g. media capture).
+  GPUBackendFramePresentationParameters frame;
+  const bool submit_frame = System::GetFramePresentationParameters(&frame);
+  if (!submit_frame)
+    return;
+
   // Submit can be skipped if it's a dupe frame and we're not dumping frames.
   GPUBackendSubmitFrameCommand* cmd = GPUBackend::NewSubmitFrameCommand();
-  if (System::GetFramePresentationParameters(&cmd->frame))
-  {
-    const bool drain_one = cmd->frame.present_frame && GPUBackend::BeginQueueFrame();
-    GPUThread::PushCommandAndWakeThread(cmd);
-    if (drain_one)
-      GPUBackend::WaitForOneQueuedFrame();
-  }
+  std::memcpy(&cmd->frame, &frame, sizeof(frame));
+
+  const bool drain_one = cmd->frame.present_frame && GPUBackend::BeginQueueFrame();
+  GPUThread::PushCommandAndWakeThread(cmd);
+  if (drain_one)
+    GPUBackend::WaitForOneQueuedFrame();
 }
 
 u8 GPU::CalculateAutomaticResolutionScale() const
@@ -2011,7 +2006,7 @@ u8 GPU::CalculateAutomaticResolutionScale() const
                       m_crtc_state.display_height, m_crtc_state.display_origin_left, m_crtc_state.display_origin_top,
                       m_crtc_state.display_vram_width, m_crtc_state.display_vram_height, g_settings.display_rotation,
                       g_settings.display_alignment, g_settings.gpu_show_vram ? 1.0f : ComputePixelAspectRatio(),
-                      g_settings.IsUsingIntegerDisplayScaling(), &display_rect, &draw_rect);
+                      g_settings.IsUsingIntegerDisplayScaling(false), &display_rect, &draw_rect);
 
     // We use the draw rect to determine scaling. This way we match the resolution as best we can, regardless of the
     // anamorphic aspect ratio.
@@ -2028,27 +2023,28 @@ u8 GPU::CalculateAutomaticResolutionScale() const
   return Truncate8(scale);
 }
 
-bool GPU::DumpVRAMToFile(const char* filename)
+bool GPU::DumpVRAMToFile(std::string path, Error* error)
 {
   ReadVRAM(0, 0, VRAM_WIDTH, VRAM_HEIGHT);
 
-  const char* extension = std::strrchr(filename, '.');
-  if (extension && StringUtil::Strcasecmp(extension, ".png") == 0)
+  const std::string_view extension = Path::GetExtension(path);
+  if (StringUtil::EqualNoCase(extension, "png"))
   {
-    return DumpVRAMToFile(filename, VRAM_WIDTH, VRAM_HEIGHT, sizeof(u16) * VRAM_WIDTH, g_vram, true);
+    return DumpVRAMToFile(std::move(path), VRAM_WIDTH, VRAM_HEIGHT, sizeof(u16) * VRAM_WIDTH, g_vram, true, error);
   }
-  else if (extension && StringUtil::Strcasecmp(extension, ".bin") == 0)
+  else if (StringUtil::EqualNoCase(extension, "bin"))
   {
-    return FileSystem::WriteBinaryFile(filename, g_vram, VRAM_WIDTH * VRAM_HEIGHT * sizeof(u16));
+    return FileSystem::WriteAtomicRenamedFile(std::move(path), g_vram, VRAM_WIDTH * VRAM_HEIGHT * sizeof(u16), error);
   }
   else
   {
-    ERROR_LOG("Unknown extension: '{}'", filename);
+    Error::SetStringFmt(error, "Unknown extension: '{}'", extension);
     return false;
   }
 }
 
-bool GPU::DumpVRAMToFile(const char* filename, u32 width, u32 height, u32 stride, const void* buffer, bool remove_alpha)
+bool GPU::DumpVRAMToFile(std::string path, u32 width, u32 height, u32 stride, const void* buffer, bool remove_alpha,
+                         Error* error /* = nullptr */)
 {
   Image image(width, height, ImageFormat::RGBA8);
 
@@ -2072,7 +2068,7 @@ bool GPU::DumpVRAMToFile(const char* filename, u32 width, u32 height, u32 stride
     ptr_in += stride;
   }
 
-  return image.SaveToFile(filename);
+  return image.SaveToFile(path.c_str(), Image::DEFAULT_SAVE_QUALITY, error);
 }
 
 void GPU::DrawDebugStateWindow(float scale)
@@ -2153,20 +2149,18 @@ bool GPU::StartRecordingGPUDump(const char* path, u32 num_frames /* = 1 */)
   m_gpu_dump = GPUDump::Recorder::Create(path, System::GetGameSerial(), num_frames, &error);
   if (!m_gpu_dump)
   {
-    Host::AddIconOSDWarning(
-      std::move(osd_key), ICON_EMOJI_CAMERA_WITH_FLASH,
-      fmt::format("{}\n{}", TRANSLATE_SV("GPU", "Failed to start GPU trace:"), error.GetDescription()),
-      Host::OSD_ERROR_DURATION);
+    Host::AddIconOSDMessage(
+      OSDMessageType::Error, std::move(osd_key), ICON_EMOJI_CAMERA_WITH_FLASH,
+      fmt::format("{}\n{}", TRANSLATE_SV("GPU", "Failed to start GPU trace:"), error.GetDescription()));
     return false;
   }
 
   Host::AddIconOSDMessage(
-    std::move(osd_key), ICON_EMOJI_CAMERA_WITH_FLASH,
+    OSDMessageType::Quick, std::move(osd_key), ICON_EMOJI_CAMERA_WITH_FLASH,
     (num_frames != 0) ?
       fmt::format(TRANSLATE_FS("GPU", "Saving {0} frame GPU trace to '{1}'."), num_frames, Path::GetFileName(path)) :
       fmt::format(TRANSLATE_FS("GPU", "Saving multi-frame frame GPU trace to '{1}'."), num_frames,
-                  Path::GetFileName(path)),
-    Host::OSD_QUICK_DURATION);
+                  Path::GetFileName(path)));
 
   // save screenshot to same location to identify it
   GPUBackend::RenderScreenshotToFile(Path::ReplaceExtension(path, "png"), DisplayScreenshotMode::ScreenResolution, 85,
@@ -2182,10 +2176,9 @@ void GPU::StopRecordingGPUDump()
   Error error;
   if (!m_gpu_dump->Close(&error))
   {
-    Host::AddIconOSDWarning(
-      "GPUDump", ICON_EMOJI_CAMERA_WITH_FLASH,
-      fmt::format("{}\n{}", TRANSLATE_SV("GPU", "Failed to close GPU trace:"), error.GetDescription()),
-      Host::OSD_ERROR_DURATION);
+    Host::AddIconOSDMessage(
+      OSDMessageType::Error, "GPUDump", ICON_EMOJI_CAMERA_WITH_FLASH,
+      fmt::format("{}\n{}", TRANSLATE_SV("GPU", "Failed to close GPU trace:"), error.GetDescription()));
     m_gpu_dump.reset();
   }
 
@@ -2197,9 +2190,8 @@ void GPU::StopRecordingGPUDump()
   if (compress_mode == GPUDumpCompressionMode::Disabled)
   {
     Host::AddIconOSDMessage(
-      "GPUDump", ICON_EMOJI_CAMERA_WITH_FLASH,
-      fmt::format(TRANSLATE_FS("GPU", "Saved GPU trace to '{}'."), Path::GetFileName(m_gpu_dump->GetPath())),
-      Host::OSD_QUICK_DURATION);
+      OSDMessageType::Info, "GPUDump", ICON_EMOJI_CAMERA_WITH_FLASH,
+      fmt::format(TRANSLATE_FS("GPU", "Saved GPU trace to '{}'."), Path::GetFileName(m_gpu_dump->GetPath())));
     m_gpu_dump.reset();
     return;
   }
@@ -2207,28 +2199,25 @@ void GPU::StopRecordingGPUDump()
   std::string source_path = m_gpu_dump->GetPath();
   m_gpu_dump.reset();
 
-  // Use a 60 second timeout to give it plenty of time to actually save.
   Host::AddIconOSDMessage(
-    osd_key, ICON_EMOJI_CAMERA_WITH_FLASH,
-    fmt::format(TRANSLATE_FS("GPU", "Compressing GPU trace '{}'..."), Path::GetFileName(source_path)), 60.0f);
+    OSDMessageType::Persistent, osd_key, ICON_EMOJI_CAMERA_WITH_FLASH,
+    fmt::format(TRANSLATE_FS("GPU", "Compressing GPU trace '{}'..."), Path::GetFileName(source_path)));
   System::QueueAsyncTask([compress_mode, source_path = std::move(source_path), osd_key = std::move(osd_key)]() mutable {
     Error error;
     if (GPUDump::Recorder::Compress(source_path, compress_mode, &error))
     {
       Host::AddIconOSDMessage(
-        std::move(osd_key), ICON_EMOJI_CAMERA_WITH_FLASH,
-        fmt::format(TRANSLATE_FS("GPU", "Saved GPU trace to '{}'."), Path::GetFileName(source_path)),
-        Host::OSD_QUICK_DURATION);
+        OSDMessageType::Info, std::move(osd_key), ICON_EMOJI_CAMERA_WITH_FLASH,
+        fmt::format(TRANSLATE_FS("GPU", "Saved GPU trace to '{}'."), Path::GetFileName(source_path)));
     }
     else
     {
-      Host::AddIconOSDWarning(
-        std::move(osd_key), ICON_EMOJI_CAMERA_WITH_FLASH,
+      Host::AddIconOSDMessage(
+        OSDMessageType::Error, std::move(osd_key), ICON_EMOJI_CAMERA_WITH_FLASH,
         fmt::format("{}\n{}",
                     SmallString::from_format(TRANSLATE_FS("GPU", "Failed to save GPU trace to '{}':"),
                                              Path::GetFileName(source_path)),
-                    error.GetDescription()),
-        Host::OSD_ERROR_DURATION);
+                    error.GetDescription()));
     }
   });
 }

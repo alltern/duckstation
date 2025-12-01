@@ -43,9 +43,9 @@ public:
   bool hasCodeWithName(const std::string_view name) const;
   void disableAllCheats();
 
-private Q_SLOTS:
+private:
   void onEnableCheatsChanged(Qt::CheckState state);
-  void onSortCheatsToggled(bool checked);
+  void onSortCheatsClicked(bool checked);
   void onSearchFilterChanged(const QString& text);
   void onLoadDatabaseCheatsChanged(Qt::CheckState state);
   void onCheatListItemDoubleClicked(const QModelIndex& index);
@@ -60,7 +60,6 @@ private Q_SLOTS:
   void onClearClicked();
   void reloadList();
 
-private:
   bool shouldLoadFromDatabase() const;
   void checkForMasterDisable();
 
@@ -89,15 +88,15 @@ private:
   bool m_master_enable_ignored = false;
 };
 
-class CheatCodeEditorDialog : public QDialog
+class CheatCodeEditorDialog final : public QDialog
 {
   Q_OBJECT
 
 public:
-  CheatCodeEditorDialog(GameCheatSettingsWidget* parent, Cheats::CodeInfo* code, const QStringList& group_names);
+  CheatCodeEditorDialog(GameCheatSettingsWidget* parent, Cheats::CodeInfo code, const QStringList& group_names);
   ~CheatCodeEditorDialog() override;
 
-private Q_SLOTS:
+private:
   void onGroupSelectedIndexChanged(int index);
   void saveClicked();
 
@@ -106,18 +105,17 @@ private Q_SLOTS:
   void onRangeMaxChanged(int value);
   void onEditChoiceClicked();
 
-private:
   void setupAdditionalUi(const QStringList& group_names);
   void fillUi();
 
   GameCheatSettingsWidget* m_parent;
   Ui::GameCheatCodeEditorDialog m_ui;
 
-  Cheats::CodeInfo* m_code;
+  Cheats::CodeInfo m_code;
   Cheats::CodeOptionList m_new_options;
 };
 
-class GameCheatCodeChoiceEditorDialog : public QDialog
+class GameCheatCodeChoiceEditorDialog final : public QDialog
 {
   Q_OBJECT
 
@@ -127,11 +125,10 @@ public:
 
   Cheats::CodeOptionList getNewOptions() const;
 
-private Q_SLOTS:
+private:
   void onAddClicked();
   void onRemoveClicked();
   void onSaveClicked();
 
-private:
   Ui::GameCheatCodeChoiceEditorDialog m_ui;
 };

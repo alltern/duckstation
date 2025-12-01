@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-#include "sdl_key_names.h"
-
 #include "scmversion/scmversion.h"
 
 #include "core/achievements.h"
 #include "core/bus.h"
 #include "core/controller.h"
-#include "core/fullscreen_ui.h"
+#include "core/fullscreenui.h"
+#include "core/fullscreenui_widgets.h"
 #include "core/game_list.h"
 #include "core/gpu.h"
 #include "core/gpu_backend.h"
@@ -19,8 +18,8 @@
 #include "core/system.h"
 #include "core/system_private.h"
 
+#include "util/cd_image.h"
 #include "util/gpu_device.h"
-#include "util/imgui_fullscreen.h"
 #include "util/imgui_manager.h"
 #include "util/ini_settings_interface.h"
 #include "util/input_manager.h"
@@ -39,6 +38,7 @@
 #include "common/path.h"
 #include "common/string_util.h"
 #include "common/threading.h"
+#include "common/time_helpers.h"
 
 #include "IconsEmoji.h"
 #include "fmt/format.h"
@@ -111,7 +111,6 @@ struct SDLHostState
   SDL_Window* sdl_window = nullptr;
   float sdl_window_scale = 0.0f;
   WindowInfo::PreRotation force_prerotation = WindowInfo::PreRotation::Identity;
-  std::atomic_bool fullscreen{false};
 
   Threading::Thread cpu_thread;
   Threading::Thread gpu_thread;
@@ -180,13 +179,13 @@ bool MiniHost::EarlyProcessStartup()
   // Thanks, and I hope you understand.
   //
 
-  const char* message = ICON_EMOJI_WARNING "WARNING! You are not using an official release! " ICON_EMOJI_WARNING "\n\n"
-                                           "DuckStation is licensed under the terms of CC-BY-NC-ND-4.0,\n"
-                                           "which does not allow modified builds to be distributed.\n\n"
-                                           "This build is NOT OFFICIAL and may be broken and/or malicious.\n\n"
-                                           "You should download an official build from https://www.duckstation.org/.";
+  const char* title = "WARNING! You are not using an official release!";
+  const char* message = "DuckStation is licensed under the terms of CC-BY-NC-ND-4.0,\n"
+                        "which does not allow modified builds to be distributed.\n\n"
+                        "This build is NOT OFFICIAL and may be broken and/or malicious.\n\n"
+                        "You should download an official build from https://www.duckstation.org/.";
 
-  Host::AddKeyedOSDWarning("OfficialReleaseWarning", message, Host::OSD_CRITICAL_ERROR_DURATION);
+  Host::AddIconOSDMessage(OSDMessageType::Error, "OfficialReleaseWarning", ICON_EMOJI_WARNING, title, message);
 #endif
 
   return true;
@@ -353,14 +352,15 @@ void Host::AddFixedInputBindings(const SettingsInterface& si)
 
 void Host::OnInputDeviceConnected(InputBindingKey key, std::string_view identifier, std::string_view device_name)
 {
-  Host::AddKeyedOSDMessage(fmt::format("InputDeviceConnected-{}", identifier),
-                           fmt::format("Input device {0} ({1}) connected.", device_name, identifier), 10.0f);
+  Host::AddIconOSDMessage(OSDMessageType::Info, fmt::format("InputDeviceConnected-{}", identifier),
+                          ICON_EMOJI_INFORMATION,
+                          fmt::format("Input device {0} ({1}) connected.", device_name, identifier));
 }
 
 void Host::OnInputDeviceDisconnected(InputBindingKey key, std::string_view identifier)
 {
-  Host::AddKeyedOSDMessage(fmt::format("InputDeviceConnected-{}", identifier),
-                           fmt::format("Input device {} disconnected.", identifier), 10.0f);
+  Host::AddIconOSDMessage(OSDMessageType::Info, fmt::format("InputDeviceConnected-{}", identifier),
+                          ICON_EMOJI_INFORMATION, fmt::format("Input device {} disconnected.", identifier));
 }
 
 s32 Host::Internal::GetTranslatedStringImpl(std::string_view context, std::string_view msg,
@@ -623,11 +623,7 @@ std::optional<WindowInfo> Host::AcquireRenderWindow(RenderAPI render_api, bool f
     if (s_state.sdl_window)
     {
       wi = TranslateSDLWindowInfo(s_state.sdl_window, error);
-      if (wi.has_value())
-      {
-        s_state.fullscreen.store(fullscreen, std::memory_order_release);
-      }
-      else
+      if (!wi.has_value())
       {
         SDL_DestroyWindow(s_state.sdl_window);
         s_state.sdl_window = nullptr;
@@ -660,17 +656,13 @@ void Host::ReleaseRenderWindow()
     return;
 
   Host::RunOnUIThread([]() {
-    if (!s_state.fullscreen.load(std::memory_order_acquire))
+    if (!(SDL_GetWindowFlags(s_state.sdl_window) & SDL_WINDOW_FULLSCREEN))
     {
       int window_x = SDL_WINDOWPOS_UNDEFINED, window_y = SDL_WINDOWPOS_UNDEFINED;
       int window_width = DEFAULT_WINDOW_WIDTH, window_height = DEFAULT_WINDOW_HEIGHT;
       SDL_GetWindowPosition(s_state.sdl_window, &window_x, &window_y);
       SDL_GetWindowSize(s_state.sdl_window, &window_width, &window_height);
       MiniHost::SavePlatformWindowGeometry(window_x, window_y, window_width, window_height);
-    }
-    else
-    {
-      s_state.fullscreen.store(false, std::memory_order_release);
     }
 
     SDL_DestroyWindow(s_state.sdl_window);
@@ -682,27 +674,9 @@ void Host::ReleaseRenderWindow()
   s_state.platform_window_updated.Wait();
 }
 
-bool Host::IsFullscreen()
+bool Host::CanChangeFullscreenMode(bool new_fullscreen_state)
 {
-  using namespace MiniHost;
-
-  return s_state.fullscreen.load(std::memory_order_acquire);
-}
-
-void Host::SetFullscreen(bool enabled)
-{
-  using namespace MiniHost;
-
-  if (!s_state.sdl_window || s_state.fullscreen.load(std::memory_order_acquire) == enabled)
-    return;
-
-  if (!SDL_SetWindowFullscreen(s_state.sdl_window, enabled))
-  {
-    ERROR_LOG("SDL_SetWindowFullscreen() failed: {}", SDL_GetError());
-    return;
-  }
-
-  s_state.fullscreen.store(enabled, std::memory_order_release);
+  return true;
 }
 
 void Host::BeginTextInput()
@@ -746,9 +720,6 @@ bool MiniHost::GetSavedPlatformWindowGeometry(s32* x, s32* y, s32* width, s32* h
 
 void MiniHost::SavePlatformWindowGeometry(s32 x, s32 y, s32 width, s32 height)
 {
-  if (Host::IsFullscreen())
-    return;
-
   const auto lock = Host::GetSettingsLock();
   s_state.base_settings_interface.SetIntValue("UI", "MainWindowX", x);
   s_state.base_settings_interface.SetIntValue("UI", "MainWindowY", y);
@@ -831,10 +802,13 @@ void MiniHost::ProcessSDLEvent(const SDL_Event* ev)
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP:
     {
-      Host::RunOnCPUThread([key_code = static_cast<u32>(ev->key.key), pressed = (ev->type == SDL_EVENT_KEY_DOWN)]() {
-        InputManager::InvokeEvents(InputManager::MakeHostKeyboardKey(key_code), pressed ? 1.0f : 0.0f,
-                                   GenericInputBinding::Unknown);
-      });
+      if (const std::optional<u32> key = InputManager::ConvertHostNativeKeyCodeToKeyCode(ev->key.raw))
+      {
+        Host::RunOnCPUThread([key_code = key.value(), pressed = (ev->type == SDL_EVENT_KEY_DOWN)]() {
+          InputManager::InvokeEvents(InputManager::MakeHostKeyboardKey(key_code), pressed ? 1.0f : 0.0f,
+                                     GenericInputBinding::Unknown);
+        });
+      }
     }
     break;
 
@@ -1086,7 +1060,7 @@ void Host::OnSystemDestroyed()
 void Host::OnSystemAbnormalShutdown(const std::string_view reason)
 {
   GPUThread::RunOnThread([reason = std::string(reason)]() {
-    ImGuiFullscreen::OpenInfoMessageDialog(
+    FullscreenUI::OpenInfoMessageDialog(
       "Abnormal System Shutdown", fmt::format("Unfortunately, the virtual machine has abnormally shut down and cannot "
                                               "be recovered. More information about the error is below:\n\n{}",
                                               reason));
@@ -1176,17 +1150,17 @@ std::string MiniHost::GetWindowTitle(const std::string& game_title)
 #endif
 
   if (System::IsShutdown() || game_title.empty())
-    return fmt::format("DuckStation {}{}", g_scm_tag_str, suffix);
+    return fmt::format("DuckStation {}{}", g_scm_version_str, suffix);
   else
     return fmt::format("{}{}", game_title, suffix);
 }
 
 void MiniHost::WarnAboutInterface()
 {
-  const char* message = "This is the \"mini\" interface for DuckStation, and is missing many features.\n"
-                        "       We recommend using the Qt interface instead, which you can download\n"
-                        "       from https://www.duckstation.org/.";
-  Host::AddIconOSDWarning("MiniWarning", ICON_EMOJI_WARNING, message, Host::OSD_INFO_DURATION);
+  Host::AddIconOSDMessage(
+    OSDMessageType::Warning, "MiniWarning", "images/duck.png",
+    "This is the \"mini\" interface for DuckStation, and is missing many features.",
+    "We recommend using the Qt interface instead, which you can download from https://www.duckstation.org/.");
 }
 
 void Host::OnSystemGameChanged(const std::string& disc_path, const std::string& game_serial,
@@ -1344,7 +1318,7 @@ void Host::RequestResizeHostDisplay(s32 width, s32 height)
 {
   using namespace MiniHost;
 
-  if (!s_state.sdl_window || s_state.fullscreen.load(std::memory_order_acquire))
+  if (!s_state.sdl_window || SDL_GetWindowFlags(s_state.sdl_window) & SDL_WINDOW_FULLSCREEN)
     return;
 
   SDL_SetWindowSize(s_state.sdl_window, width, height);
@@ -1414,17 +1388,12 @@ std::string Host::FormatNumber(NumberFormatType type, s64 value)
         DefaultCaseIsUnreachable();
     }
 
-    struct tm ttime = {};
-    const std::time_t tvalue = static_cast<std::time_t>(value);
-#ifdef _MSC_VER
-    localtime_s(&ttime, &tvalue);
-#else
-    localtime_r(&tvalue, &ttime);
-#endif
+    ret.resize(128);
 
-    char buf[128];
-    std::strftime(buf, std::size(buf), "%x", &ttime);
-    ret.assign(buf);
+    if (const std::optional<std::tm> ltime = Common::LocalTime(static_cast<std::time_t>(value)))
+      ret.resize(std::strftime(ret.data(), ret.size(), format, &ltime.value()));
+    else
+      ret = "Invalid";
   }
   else
   {
@@ -1437,44 +1406,6 @@ std::string Host::FormatNumber(NumberFormatType type, s64 value)
 std::string Host::FormatNumber(NumberFormatType type, double value)
 {
   return fmt::format("{}", value);
-}
-
-std::optional<u32> InputManager::ConvertHostKeyboardStringToCode(std::string_view str)
-{
-  return SDLKeyNames::GetKeyCodeForName(str);
-}
-
-std::optional<std::string> InputManager::ConvertHostKeyboardCodeToString(u32 code)
-{
-  const char* converted = SDLKeyNames::GetKeyName(code);
-  return converted ? std::optional<std::string>(converted) : std::nullopt;
-}
-
-const char* InputManager::ConvertHostKeyboardCodeToIcon(u32 code)
-{
-  return nullptr;
-}
-
-bool Host::ConfirmMessage(std::string_view title, std::string_view message)
-{
-  const SmallString title_copy(title);
-  const SmallString message_copy(message);
-
-  static constexpr SDL_MessageBoxButtonData bd[2] = {
-    {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Yes"},
-    {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 2, "No"},
-  };
-  const SDL_MessageBoxData md = {SDL_MESSAGEBOX_INFORMATION,
-                                 nullptr,
-                                 title_copy.c_str(),
-                                 message_copy.c_str(),
-                                 static_cast<int>(std::size(bd)),
-                                 bd,
-                                 nullptr};
-
-  int buttonid = -1;
-  SDL_ShowMessageBox(&md, &buttonid);
-  return (buttonid == 1);
 }
 
 void Host::ConfirmMessageAsync(std::string_view title, std::string_view message, ConfirmMessageAsyncCallback callback,
@@ -1497,9 +1428,11 @@ void Host::ConfirmMessageAsync(std::string_view title, std::string_view message,
 
     GPUThread::RunOnThread([title = std::string(title), message = std::string(message), callback = std::move(callback),
                             yes_text = std::string(yes_text), no_text = std::string(no_text), needs_pause]() mutable {
-      if (!FullscreenUI::Initialize())
-      {
-        callback(false);
+      FullscreenUI::Initialize();
+
+      // Need to reset run idle state _again_ after displaying.
+      auto final_callback = [callback = std::move(callback), needs_pause](bool result) {
+        FullscreenUI::UpdateRunIdleState();
 
         if (needs_pause)
         {
@@ -1509,18 +1442,12 @@ void Host::ConfirmMessageAsync(std::string_view title, std::string_view message,
           });
         }
 
-        return;
-      }
-
-      // Need to reset run idle state _again_ after displaying.
-      auto final_callback = [callback = std::move(callback)](bool result) {
-        FullscreenUI::UpdateRunIdleState();
         callback(result);
       };
 
-      ImGuiFullscreen::OpenConfirmMessageDialog(std::move(title), std::move(message), std::move(final_callback),
-                                                fmt::format(ICON_FA_CHECK " {}", yes_text),
-                                                fmt::format(ICON_FA_XMARK " {}", no_text));
+      FullscreenUI::OpenConfirmMessageDialog(std::move(title), std::move(message), std::move(final_callback),
+                                             fmt::format(ICON_FA_CHECK " {}", yes_text),
+                                             fmt::format(ICON_FA_XMARK " {}", no_text));
       FullscreenUI::UpdateRunIdleState();
     });
   });
@@ -1798,7 +1725,8 @@ bool MiniHost::ParseCommandLineParametersAndInitializeConfig(int argc, char* arg
 
   // Check the file we're starting actually exists.
 
-  if (autoboot && !autoboot->path.empty() && !FileSystem::FileExists(autoboot->path.c_str()))
+  if (autoboot && !autoboot->path.empty() && !FileSystem::FileExists(autoboot->path.c_str()) &&
+      !CDImage::IsDeviceName(autoboot->path.c_str()))
   {
     Host::ReportFatalError("Error", fmt::format("File '{}' does not exist.", autoboot->path));
     return false;

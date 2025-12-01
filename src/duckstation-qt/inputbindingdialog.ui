@@ -2,9 +2,6 @@
 <ui version="4.0">
  <class>InputBindingDialog</class>
  <widget class="QDialog" name="InputBindingDialog">
-  <property name="windowModality">
-   <enum>Qt::WindowModality::WindowModal</enum>
-  </property>
   <property name="geometry">
    <rect>
     <x>0</x>
@@ -15,9 +12,6 @@
   </property>
   <property name="windowTitle">
    <string>Edit Bindings</string>
-  </property>
-  <property name="modal">
-   <bool>true</bool>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
@@ -115,7 +109,7 @@
        </widget>
       </item>
       <item row="0" column="3">
-       <widget class="QToolButton" name="resetSensitivity">
+       <widget class="QPushButton" name="resetSensitivity">
         <property name="toolTip">
          <string>Reset Sensitivity</string>
         </property>
@@ -125,7 +119,7 @@
        </widget>
       </item>
       <item row="1" column="3">
-       <widget class="QToolButton" name="resetDeadzone">
+       <widget class="QPushButton" name="resetDeadzone">
         <property name="toolTip">
          <string>Reset Deadzone</string>
         </property>

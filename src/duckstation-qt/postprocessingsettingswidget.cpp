@@ -3,6 +3,7 @@
 
 #include "postprocessingsettingswidget.h"
 #include "qthost.h"
+#include "qtutils.h"
 #include "settingswindow.h"
 #include "settingwidgetbinder.h"
 
@@ -14,13 +15,15 @@
 
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
+#include <QtGui/QIcon>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QLabel>
-#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QSlider>
+
+#include "fmt/format.h"
 
 #include "moc_postprocessingsettingswidget.cpp"
 
@@ -79,13 +82,16 @@ void PostProcessingChainConfigWidget::triggerSettingsReload()
 void PostProcessingChainConfigWidget::connectUi()
 {
   connect(m_ui.reload, &QPushButton::clicked, this, &PostProcessingChainConfigWidget::onReloadButtonClicked);
-  connect(m_ui.add, &QToolButton::clicked, this, &PostProcessingChainConfigWidget::onAddButtonClicked);
-  connect(m_ui.remove, &QToolButton::clicked, this, &PostProcessingChainConfigWidget::onRemoveButtonClicked);
-  connect(m_ui.clear, &QToolButton::clicked, this, &PostProcessingChainConfigWidget::onClearButtonClicked);
-  connect(m_ui.moveUp, &QToolButton::clicked, this, &PostProcessingChainConfigWidget::onMoveUpButtonClicked);
-  connect(m_ui.moveDown, &QToolButton::clicked, this, &PostProcessingChainConfigWidget::onMoveDownButtonClicked);
+  connect(m_ui.openDirectory, &QPushButton::clicked, this,
+          &PostProcessingChainConfigWidget::onOpenDirectoryButtonClicked);
+  connect(m_ui.add, &QPushButton::clicked, this, &PostProcessingChainConfigWidget::onAddButtonClicked);
+  connect(m_ui.remove, &QPushButton::clicked, this, &PostProcessingChainConfigWidget::onRemoveButtonClicked);
+  connect(m_ui.clear, &QPushButton::clicked, this, &PostProcessingChainConfigWidget::onClearButtonClicked);
+  connect(m_ui.moveUp, &QPushButton::clicked, this, &PostProcessingChainConfigWidget::onMoveUpButtonClicked);
+  connect(m_ui.moveDown, &QPushButton::clicked, this, &PostProcessingChainConfigWidget::onMoveDownButtonClicked);
   connect(m_ui.stages, &QListWidget::itemSelectionChanged, this,
-          &PostProcessingChainConfigWidget::onSelectedShaderChanged);
+          &PostProcessingChainConfigWidget::onStageItemSelectionChanged);
+  connect(m_ui.stages, &QListWidget::itemChanged, this, &PostProcessingChainConfigWidget::onStageItemChanged);
 }
 
 std::optional<u32> PostProcessingChainConfigWidget::getSelectedIndex() const
@@ -119,11 +125,17 @@ void PostProcessingChainConfigWidget::updateList(const SettingsInterface& si)
 
   const u32 stage_count = PostProcessing::Config::GetStageCount(si, m_section);
 
+  QSignalBlocker sb(m_ui.stages);
+
   for (u32 i = 0; i < stage_count; i++)
   {
+    const bool stage_enabled = PostProcessing::Config::IsStageEnabled(si, m_section, i);
     const std::string stage_name = PostProcessing::Config::GetStageShaderName(si, m_section, i);
+
     QListWidgetItem* item = new QListWidgetItem(QString::fromStdString(stage_name), m_ui.stages);
+    item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
     item->setData(Qt::UserRole, QVariant(i));
+    item->setCheckState(stage_enabled ? Qt::Checked : Qt::Unchecked);
   }
 
   m_ui.clear->setEnabled(stage_count > 0);
@@ -173,39 +185,31 @@ void PostProcessingChainConfigWidget::updateButtonsAndConfigPane(std::optional<u
 
 void PostProcessingChainConfigWidget::onAddButtonClicked()
 {
-  QMenu menu;
+  PostProcessingSelectShaderDialog* const dialog = new PostProcessingSelectShaderDialog(this);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
 
-  std::vector<std::pair<std::string, std::string>> shaders = PostProcessing::GetAvailableShaderNames();
-  if (shaders.empty())
-  {
-    menu.addAction(tr("No Shaders Available"))->setEnabled(false);
-  }
-  else
-  {
-    for (auto& [display_name, name] : shaders)
+  connect(dialog, &QDialog::accepted, this, [this, dialog]() {
+    const std::string selected_shader = dialog->getSelectedShader();
+    if (selected_shader.empty())
+      return;
+
+    auto lock = Host::GetSettingsLock();
+    SettingsInterface& si = getSettingsInterfaceToUpdate();
+
+    Error error;
+    if (!PostProcessing::Config::AddStage(si, m_section, selected_shader, &error))
     {
-      QAction* action = menu.addAction(QString::fromStdString(display_name));
-      connect(action, &QAction::triggered, [this, shader = std::move(name)]() {
-        auto lock = Host::GetSettingsLock();
-        SettingsInterface& si = getSettingsInterfaceToUpdate();
-
-        Error error;
-        if (!PostProcessing::Config::AddStage(si, m_section, shader, &error))
-        {
-          lock.unlock();
-          QMessageBox::critical(this, tr("Error"),
-                                tr("Failed to add shader: %1").arg(QString::fromStdString(error.GetDescription())));
-          return;
-        }
-
-        updateList(si);
-        lock.unlock();
-        commitSettingsUpdate();
-      });
+      QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                               tr("Failed to add shader: %1").arg(QString::fromStdString(error.GetDescription())));
+      return;
     }
-  }
 
-  menu.exec(QCursor::pos());
+    updateList(si);
+    lock.unlock();
+    commitSettingsUpdate();
+  });
+
+  dialog->open();
 }
 
 void PostProcessingChainConfigWidget::onRemoveButtonClicked()
@@ -230,8 +234,8 @@ void PostProcessingChainConfigWidget::onRemoveButtonClicked()
 
 void PostProcessingChainConfigWidget::onClearButtonClicked()
 {
-  if (QMessageBox::question(this, tr("Question"), tr("Are you sure you want to clear all shader stages?"),
-                            QMessageBox::Yes, QMessageBox::No) == QMessageBox::Yes)
+  if (QtUtils::MessageBoxQuestion(this, tr("Clear Shader Stages"),
+                                  tr("Are you sure you want to clear all shader stages?")) == QMessageBox::Yes)
   {
     auto lock = Host::GetSettingsLock();
     SettingsInterface& si = getSettingsInterfaceToUpdate();
@@ -277,10 +281,33 @@ void PostProcessingChainConfigWidget::onReloadButtonClicked()
   g_emu_thread->reloadPostProcessingShaders();
 }
 
-void PostProcessingChainConfigWidget::onSelectedShaderChanged()
+void PostProcessingChainConfigWidget::onOpenDirectoryButtonClicked()
+{
+  QtUtils::OpenURL(this, QUrl::fromLocalFile(QString::fromStdString(EmuFolders::Shaders)));
+}
+
+void PostProcessingChainConfigWidget::onStageItemSelectionChanged()
 {
   std::optional<u32> index = getSelectedIndex();
   updateButtonsAndConfigPane(index);
+}
+
+void PostProcessingChainConfigWidget::onStageItemChanged(QListWidgetItem* item)
+{
+  if (!item)
+    return;
+
+  const QVariant item_data = item->data(Qt::UserRole);
+  if (!item_data.isValid())
+    return;
+
+  const u32 index = item_data.toUInt();
+
+  auto lock = Host::GetSettingsLock();
+  SettingsInterface& si = getSettingsInterfaceToUpdate();
+  PostProcessing::Config::SetStageEnabled(si, m_section, index, item->checkState() == Qt::Checked);
+  lock.unlock();
+  commitSettingsUpdate();
 }
 
 PostProcessingShaderConfigWidget::PostProcessingShaderConfigWidget(QWidget* parent,
@@ -353,7 +380,8 @@ void PostProcessingShaderConfigWidget::createUi()
       {
         QLabel* label = new QLabel(QString::fromStdString(option.category), this);
         QFont label_font(label->font());
-        label_font.setPointSizeF(12.0f);
+        label_font.setPixelSize(16);
+        label_font.setBold(true);
         label->setFont(label_font);
         m_layout->addWidget(label, row++, 0, 1, 3, Qt::AlignLeft);
       }
@@ -474,11 +502,11 @@ void PostProcessingShaderConfigWidget::createUi()
           const float range = option.max_value[i].float_value - option.min_value[i].float_value;
           const float step_value =
             (option.step_value[i].float_value != 0) ? option.step_value[i].float_value : ((range + 99.0f) / 100.0f);
-          const float num_steps = std::ceil(range / step_value);
+          const int num_steps = static_cast<int>(std::ceil(range / step_value));
           slider->setMinimum(0);
           slider->setMaximum(num_steps);
           slider->setSingleStep(1);
-          slider->setTickInterval(step_value);
+          slider->setTickInterval(static_cast<int>(step_value));
           slider->setValue(
             static_cast<int>((option.value[i].float_value - option.min_value[i].float_value) / step_value));
           connect(slider, &QSlider::valueChanged, [this, &option, i, slider_label](int value) {
@@ -629,7 +657,224 @@ void PostProcessingOverlayConfigWidget::onExportCustomConfigClicked()
   if (!FileSystem::WriteStringToFile(QDir::toNativeSeparators(path).toStdString().c_str(), output.toStdString(),
                                      &error))
   {
-    QMessageBox::critical(this, tr("Export Error"),
-                          tr("Failed to save file: %1").arg(QString::fromStdString(error.GetDescription())));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Export Error"),
+                             tr("Failed to save file: %1").arg(QString::fromStdString(error.GetDescription())));
+  }
+}
+
+PostProcessingSelectShaderDialog::PostProcessingSelectShaderDialog(QWidget* parent) : QDialog(parent)
+{
+  m_ui.setupUi(this);
+
+  m_ui.searchIcon->setPixmap(QIcon::fromTheme("mag-line").pixmap(16));
+
+  m_ui.filterGroup->setId(m_ui.filterGLSL, static_cast<int>(PostProcessing::ShaderType::GLSL));
+  m_ui.filterGroup->setId(m_ui.filterReshade, static_cast<int>(PostProcessing::ShaderType::Reshade));
+  m_ui.filterGroup->setId(m_ui.filterSlang, static_cast<int>(PostProcessing::ShaderType::Slang));
+  connect(m_ui.filterGroup, &QButtonGroup::idClicked, this, &PostProcessingSelectShaderDialog::updateShaderVisibility);
+  connect(m_ui.search, &QLineEdit::textChanged, this, &PostProcessingSelectShaderDialog::updateShaderVisibility);
+
+  m_ui.buttonBox->button(QDialogButtonBox::Ok)->setText(tr("Add"));
+  m_ui.buttonBox->button(QDialogButtonBox::Ok)->setEnabled(false);
+
+  connect(m_ui.shaderList, &QTreeWidget::itemSelectionChanged, this,
+          &PostProcessingSelectShaderDialog::updateAddButtonEnabled);
+  connect(m_ui.shaderList, &QTreeWidget::itemDoubleClicked, this, &PostProcessingSelectShaderDialog::accept);
+
+  populateShaderList();
+}
+
+PostProcessingSelectShaderDialog::~PostProcessingSelectShaderDialog() = default;
+
+std::string PostProcessingSelectShaderDialog::getSelectedShader() const
+{
+  std::string ret;
+
+  QList<QTreeWidgetItem*> selected_items = m_ui.shaderList->selectedItems();
+  if (!selected_items.empty())
+    ret = selected_items.first()->data(0, Qt::UserRole).toString().toStdString();
+
+  return ret;
+}
+
+QTreeWidgetItem* PostProcessingSelectShaderDialog::createTreeItem(const QString& name, const QString& display_name,
+                                                                  bool is_directory) const
+{
+  const qsizetype pos = name.lastIndexOf('/');
+  QTreeWidgetItem* item;
+  if (pos < 0)
+  {
+    // this is a root item, create it
+    item = new QTreeWidgetItem(m_ui.shaderList);
+  }
+  else
+  {
+    const QString parent_name = name.left(pos);
+
+    QTreeWidgetItem* parent_item = findTreeItemByName(m_ui.shaderList->invisibleRootItem(), parent_name);
+    ;
+    if (!parent_item)
+      parent_item = createTreeItem(parent_name, display_name.left(pos), true);
+
+    DebugAssert(parent_item);
+    item = new QTreeWidgetItem(parent_item);
+  }
+
+  item->setText(0, display_name.mid(pos + 1));
+  if (is_directory)
+  {
+    item->setIcon(0, QIcon::fromTheme("folder-open-line"));
+    item->setExpanded(true);
+  }
+
+  return item;
+}
+
+void PostProcessingSelectShaderDialog::populateShaderList()
+{
+  std::vector<std::pair<std::string, PostProcessing::ShaderType>> shaders = PostProcessing::GetAvailableShaderNames();
+  for (const auto& [name, type] : shaders)
+  {
+    const QString display_name =
+      QString::fromStdString(fmt::format("{} [{}]", name, PostProcessing::GetShaderTypeDisplayName(type)));
+    QTreeWidgetItem* item = createTreeItem(QString::fromStdString(name), display_name, false);
+
+    item->setIcon(0, shaderIconFromType(type));
+    item->setData(0, NameRole, QString::fromStdString(name));
+    item->setData(0, TypeRole, static_cast<int>(type));
+  }
+
+  // Collapse single shader subdirectories into one.
+  collapseShaderList(m_ui.shaderList->invisibleRootItem());
+}
+
+void PostProcessingSelectShaderDialog::updateShaderVisibility()
+{
+  std::optional<PostProcessing::ShaderType> type_filter;
+  if (const int checked_id = m_ui.filterGroup->checkedId(); checked_id >= 0)
+    type_filter = static_cast<PostProcessing::ShaderType>(checked_id);
+
+  const QString name_filter = m_ui.search->text();
+  updateTreeItemVisibility(type_filter, name_filter, m_ui.shaderList->invisibleRootItem());
+}
+
+void PostProcessingSelectShaderDialog::updateAddButtonEnabled()
+{
+  QList<QTreeWidgetItem*> selected_items = m_ui.shaderList->selectedItems();
+  m_ui.buttonBox->button(QDialogButtonBox::Ok)->setEnabled(!selected_items.empty());
+}
+
+QIcon PostProcessingSelectShaderDialog::shaderIconFromType(const PostProcessing::ShaderType type)
+{
+  switch (type)
+  {
+    case PostProcessing::ShaderType::GLSL:
+      return QIcon::fromTheme("shader-glsl");
+    case PostProcessing::ShaderType::Reshade:
+      return QIcon::fromTheme("shader-reshade");
+    case PostProcessing::ShaderType::Slang:
+      return QIcon::fromTheme("shader-slang");
+    default:
+      return QIcon();
+  }
+}
+
+void PostProcessingSelectShaderDialog::updateTreeItemVisibility(
+  const std::optional<PostProcessing::ShaderType>& type_filter, const QString& name_filter, QTreeWidgetItem* item)
+{
+  static constexpr const auto is_directory = [](QTreeWidgetItem* item) { return item->childCount() > 0; };
+
+  // update visibility of children first
+  const int child_count = item->childCount();
+  for (int i = 0; i < child_count; i++)
+  {
+    QTreeWidgetItem* const child = item->child(i);
+    if (is_directory(child))
+    {
+      updateTreeItemVisibility(type_filter, name_filter, child);
+      child->setHidden(!hasAnyVisibleChildren(child));
+    }
+    else
+    {
+      bool visible = true;
+      if (type_filter.has_value())
+        visible = (type_filter.value() == static_cast<PostProcessing::ShaderType>(child->data(0, TypeRole).toInt()));
+      if (visible && !name_filter.isEmpty())
+        visible = child->data(0, NameRole).toString().contains(name_filter, Qt::CaseInsensitive);
+
+      child->setHidden(!visible);
+    }
+  }
+}
+
+bool PostProcessingSelectShaderDialog::hasAnyVisibleChildren(QTreeWidgetItem* item)
+{
+  const int child_count = item->childCount();
+  for (int i = 0; i < child_count; i++)
+  {
+    QTreeWidgetItem* const child = item->child(i);
+    if (!child->isHidden())
+      return true;
+  }
+
+  return false;
+}
+
+void PostProcessingSelectShaderDialog::collapseShaderList(QTreeWidgetItem* item)
+{
+  int child_count = item->childCount();
+  if (child_count == 0)
+    return;
+
+  for (int i = 0; i < child_count; i++)
+  {
+    QTreeWidgetItem* const child = item->child(i);
+    collapseShaderList(child);
+
+    // If this child is a directory with only one child, merge it.
+    if (child->childCount() == 1)
+    {
+      QTreeWidgetItem* const grandchild = child->child(0);
+      const QString merged_name = QStringLiteral("%1/%2").arg(child->text(0)).arg(grandchild->text(0));
+      child->setText(0, merged_name);
+      child->setIcon(0, grandchild->icon(0));
+      child->setData(0, NameRole, grandchild->data(0, NameRole));
+      child->setData(0, TypeRole, grandchild->data(0, TypeRole));
+      child->removeChild(grandchild);
+      delete grandchild;
+    }
+  }
+}
+
+QTreeWidgetItem* PostProcessingSelectShaderDialog::findTreeItemByName(QTreeWidgetItem* parent, const QString& name)
+{
+  const qsizetype pos = name.indexOf('/');
+  const int child_count = parent->childCount();
+  if (pos < 0)
+  {
+    // This is a root item, search among children.
+    for (int i = 0; i < child_count; i++)
+    {
+      QTreeWidgetItem* const child = parent->child(i);
+      if (child->text(0) == name)
+        return child;
+    }
+
+    return nullptr;
+  }
+  else
+  {
+    const QString current_level_name = name.left(pos);
+    const QString remaining_name = name.mid(pos + 1);
+
+    // Search for the current level among children.
+    for (int i = 0; i < child_count; i++)
+    {
+      QTreeWidgetItem* const child = parent->child(i);
+      if (child->text(0) == current_level_name)
+        return findTreeItemByName(child, remaining_name);
+    }
+
+    return nullptr;
   }
 }

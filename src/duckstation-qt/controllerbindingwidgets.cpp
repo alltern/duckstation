@@ -35,7 +35,6 @@
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMenu>
-#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSpinBox>
 #include <algorithm>
@@ -263,38 +262,36 @@ void ControllerBindingWidget::onTypeChanged()
 
 void ControllerBindingWidget::onAutomaticBindingClicked()
 {
-  QMenu menu(this);
+  QMenu* const menu = QtUtils::NewPopupMenu(this);
   bool added = false;
 
   for (const InputDeviceListModel::Device& dev : g_emu_thread->getInputDeviceListModel()->getDeviceList())
   {
     // we set it as data, because the device list could get invalidated while the menu is up
-    QAction* action = menu.addAction(QStringLiteral("%1 (%2)").arg(dev.identifier).arg(dev.display_name));
-    action->setIcon(InputDeviceListModel::getIconForKey(dev.key));
-    action->setData(dev.identifier);
-    connect(action, &QAction::triggered, this,
-            [this, action]() { doDeviceAutomaticBinding(action->data().toString()); });
+    menu->addAction(InputDeviceListModel::getIconForKey(dev.key),
+                    QStringLiteral("%1 (%2)").arg(dev.identifier).arg(dev.display_name),
+                    [this, device = dev.identifier]() { doDeviceAutomaticBinding(device); });
     added = true;
   }
 
   if (added)
   {
-    QAction* action = menu.addAction(tr("Multiple devices..."));
-    connect(action, &QAction::triggered, this, &ControllerBindingWidget::onMultipleDeviceAutomaticBindingTriggered);
+    menu->addAction(tr("Multiple devices..."), this,
+                    &ControllerBindingWidget::onMultipleDeviceAutomaticBindingTriggered);
   }
   else
   {
-    QAction* action = menu.addAction(tr("No devices available"));
+    QAction* const action = menu->addAction(tr("No devices available"));
     action->setEnabled(false);
   }
 
-  menu.exec(QCursor::pos());
+  menu->popup(QCursor::pos());
 }
 
 void ControllerBindingWidget::onClearBindingsClicked()
 {
-  if (QMessageBox::question(
-        QtUtils::GetRootWidget(this), tr("Clear Mapping"),
+  if (QtUtils::MessageBoxQuestion(
+        this, tr("Clear Mapping"),
         tr("Are you sure you want to clear all mappings for this controller? This action cannot be undone.")) !=
       QMessageBox::Yes)
   {
@@ -344,8 +341,8 @@ void ControllerBindingWidget::doDeviceAutomaticBinding(const QString& device)
     InputManager::GetGenericBindingMapping(device.toStdString());
   if (mapping.empty())
   {
-    QMessageBox::critical(
-      QtUtils::GetRootWidget(this), tr("Automatic Mapping"),
+    QtUtils::AsyncMessageBox(
+      this, QMessageBox::Critical, tr("Automatic Mapping Failed"),
       tr("No generic bindings were generated for device '%1'. The controller/source may not support automatic mapping.")
         .arg(device));
     return;
@@ -371,100 +368,13 @@ void ControllerBindingWidget::doDeviceAutomaticBinding(const QString& device)
 
 void ControllerBindingWidget::onMultipleDeviceAutomaticBindingTriggered()
 {
+  QDialog* const dialog = new MultipleDeviceAutobindDialog(this, m_dialog, m_port_number);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+
   // force a refresh after mapping
-  if (doMultipleDeviceAutomaticBinding(this, m_dialog, m_port_number))
-    onTypeChanged();
-}
+  connect(dialog, &QDialog::accepted, this, [this] { onTypeChanged(); });
 
-bool ControllerBindingWidget::doMultipleDeviceAutomaticBinding(QWidget* parent, ControllerSettingsWindow* parent_dialog,
-                                                               u32 port)
-{
-  QDialog dialog(parent);
-
-  QVBoxLayout* layout = new QVBoxLayout(&dialog);
-  QLabel help(tr("Select the devices from the list below that you want to bind to this controller."), &dialog);
-  layout->addWidget(&help);
-
-  QListWidget list(&dialog);
-  list.setSelectionMode(QListWidget::SingleSelection);
-  layout->addWidget(&list);
-
-  for (const InputDeviceListModel::Device& dev : g_emu_thread->getInputDeviceListModel()->getDeviceList())
-  {
-    QListWidgetItem* item = new QListWidgetItem;
-    item->setText(QStringLiteral("%1 (%2)").arg(dev.identifier).arg(dev.display_name));
-    item->setData(Qt::UserRole, dev.identifier);
-    item->setIcon(InputDeviceListModel::getIconForKey(dev.key));
-    item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-    item->setCheckState(Qt::Unchecked);
-    list.addItem(item);
-  }
-
-  QDialogButtonBox bb(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-  connect(&bb, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-  connect(&bb, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-  layout->addWidget(&bb);
-
-  if (dialog.exec() == QDialog::Rejected)
-    return false;
-
-  auto lock = Host::GetSettingsLock();
-  const bool global = (!parent_dialog || parent_dialog->isEditingGlobalSettings());
-  SettingsInterface& si =
-    *(global ? Host::Internal::GetBaseSettingsLayer() : parent_dialog->getEditingSettingsInterface());
-
-  // first device should clear mappings
-  bool tried_any = false;
-  bool mapped_any = false;
-  const int count = list.count();
-  for (int i = 0; i < count; i++)
-  {
-    QListWidgetItem* item = list.item(i);
-    if (item->checkState() != Qt::Checked)
-      continue;
-
-    tried_any = true;
-
-    const QString identifier = item->data(Qt::UserRole).toString();
-    std::vector<std::pair<GenericInputBinding, std::string>> mapping =
-      InputManager::GetGenericBindingMapping(identifier.toStdString());
-    if (mapping.empty())
-    {
-      lock.unlock();
-      QMessageBox::critical(QtUtils::GetRootWidget(parent), tr("Automatic Mapping"),
-                            tr("No generic bindings were generated for device '%1'. The controller/source may not "
-                               "support automatic mapping.")
-                              .arg(identifier));
-      lock.lock();
-      continue;
-    }
-
-    mapped_any |= InputManager::MapController(si, port, mapping, !mapped_any);
-  }
-
-  lock.unlock();
-
-  if (!tried_any)
-  {
-    QMessageBox::information(QtUtils::GetRootWidget(parent), tr("Automatic Mapping"), tr("No devices were selected."));
-    return false;
-  }
-
-  if (mapped_any)
-  {
-    if (global)
-    {
-      QtHost::SaveGameSettings(&si, false);
-      g_emu_thread->reloadGameSettings(false);
-    }
-    else
-    {
-      QtHost::QueueSettingsSave();
-      g_emu_thread->reloadInputBindings();
-    }
-  }
-
-  return mapped_any;
+  dialog->open();
 }
 
 void ControllerBindingWidget::saveAndRefresh()
@@ -499,7 +409,8 @@ void ControllerBindingWidget::createBindingWidgets(QWidget* parent)
   {
     if (bi.type == InputBindingInfo::Type::Axis || bi.type == InputBindingInfo::Type::HalfAxis ||
         bi.type == InputBindingInfo::Type::Pointer || bi.type == InputBindingInfo::Type::RelativePointer ||
-        bi.type == InputBindingInfo::Type::Device || bi.type == InputBindingInfo::Type::Motor)
+        bi.type == InputBindingInfo::Type::Device || bi.type == InputBindingInfo::Type::Motor ||
+        bi.type == InputBindingInfo::Type::LED)
     {
       if (!axis_gbox)
       {
@@ -507,14 +418,10 @@ void ControllerBindingWidget::createBindingWidgets(QWidget* parent)
         axis_layout = new QGridLayout(axis_gbox);
       }
 
-      QGroupBox* gbox =
+      QGroupBox* const gbox =
         new QGroupBox(QtUtils::StringViewToQString(m_controller_info->GetBindingDisplayName(bi)), axis_gbox);
-      QVBoxLayout* temp = new QVBoxLayout(gbox);
-      QWidget* widget;
-      if (bi.type != InputBindingInfo::Type::Motor)
-        widget = new InputBindingWidget(gbox, sif, bi.type, getConfigSection(), bi.name);
-      else
-        widget = new InputVibrationBindingWidget(gbox, getDialog(), getConfigSection(), bi.name);
+      QVBoxLayout* const temp = new QVBoxLayout(gbox);
+      QWidget* const widget = new InputBindingWidget(gbox, sif, bi.type, getConfigSection(), bi.name);
 
       temp->addWidget(widget);
       axis_layout->addWidget(gbox, row, column);
@@ -586,7 +493,8 @@ void ControllerBindingWidget::bindBindingWidgets(QWidget* parent)
   {
     if (bi.type == InputBindingInfo::Type::Axis || bi.type == InputBindingInfo::Type::HalfAxis ||
         bi.type == InputBindingInfo::Type::Button || bi.type == InputBindingInfo::Type::Pointer ||
-        bi.type == InputBindingInfo::Type::RelativePointer)
+        bi.type == InputBindingInfo::Type::RelativePointer || bi.type == InputBindingInfo::Type::Motor ||
+        bi.type == InputBindingInfo::Type::LED)
     {
       InputBindingWidget* widget = parent->findChild<InputBindingWidget*>(QString::fromUtf8(bi.name));
       if (!widget)
@@ -596,12 +504,6 @@ void ControllerBindingWidget::bindBindingWidgets(QWidget* parent)
       }
 
       widget->initialize(sif, bi.type, config_section, bi.name);
-    }
-    else if (bi.type == InputBindingInfo::Type::Motor)
-    {
-      InputVibrationBindingWidget* widget = parent->findChild<InputVibrationBindingWidget*>(QString::fromUtf8(bi.name));
-      if (widget)
-        widget->setKey(getDialog(), config_section, bi.name);
     }
   }
 }
@@ -649,6 +551,8 @@ ControllerMacroEditWidget::ControllerMacroEditWidget(ControllerMacroWidget* pare
   : QWidget(parent), m_parent(parent), m_bwidget(bwidget), m_index(index)
 {
   m_ui.setupUi(this);
+  m_ui.increaseFrequency->setIcon(style()->standardIcon(QStyle::SP_ArrowUp));
+  m_ui.decreateFrequency->setIcon(style()->standardIcon(QStyle::SP_ArrowDown));
 
   ControllerSettingsWindow* dialog = m_bwidget->getDialog();
   const std::string& section = m_bwidget->getConfigSection();
@@ -1077,11 +981,109 @@ ControllerCustomSettingsDialog::ControllerCustomSettingsDialog(QWidget* parent, 
   QGridLayout* layout = new QGridLayout(this);
   createSettingWidgets(sif, this, layout, section, settings, tr_context);
 
-  QDialogButtonBox* bbox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::RestoreDefaults, this);
-  connect(bbox, &QDialogButtonBox::accepted, this, &ControllerCustomSettingsDialog::accept);
+  QDialogButtonBox* bbox = new QDialogButtonBox(QDialogButtonBox::Close | QDialogButtonBox::RestoreDefaults, this);
+  bbox->button(QDialogButtonBox::Close)->setDefault(true);
+  connect(bbox, &QDialogButtonBox::rejected, this, &ControllerCustomSettingsDialog::accept);
   connect(bbox->button(QDialogButtonBox::RestoreDefaults), &QPushButton::clicked, this,
           [this, settings]() { restoreDefaultSettingWidgets(this, settings); });
   layout->addWidget(bbox, layout->rowCount(), 0, 1, 4);
 }
 
 ControllerCustomSettingsDialog::~ControllerCustomSettingsDialog() = default;
+
+MultipleDeviceAutobindDialog::MultipleDeviceAutobindDialog(QWidget* parent, ControllerSettingsWindow* settings_window,
+                                                           u32 port)
+  : QDialog(parent), m_settings_window(settings_window), m_port(port)
+{
+  QVBoxLayout* layout = new QVBoxLayout(this);
+  layout->addWidget(
+    new QLabel(tr("Select the devices from the list below that you want to bind to this controller."), this));
+
+  m_list = new QListWidget(this);
+  m_list->setSelectionMode(QListWidget::SingleSelection);
+  layout->addWidget(m_list);
+
+  for (const InputDeviceListModel::Device& dev : g_emu_thread->getInputDeviceListModel()->getDeviceList())
+  {
+    QListWidgetItem* item = new QListWidgetItem;
+    item->setIcon(InputDeviceListModel::getIconForKey(dev.key));
+    item->setText(QStringLiteral("%1 (%2)").arg(dev.identifier).arg(dev.display_name));
+    item->setData(Qt::UserRole, dev.identifier);
+    item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+    item->setCheckState(Qt::Unchecked);
+    m_list->addItem(item);
+  }
+
+  QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+  connect(bb, &QDialogButtonBox::accepted, this, &MultipleDeviceAutobindDialog::doAutomaticBinding);
+  connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
+  layout->addWidget(bb);
+}
+
+MultipleDeviceAutobindDialog::~MultipleDeviceAutobindDialog() = default;
+
+void MultipleDeviceAutobindDialog::doAutomaticBinding()
+{
+  auto lock = Host::GetSettingsLock();
+  const bool global = (!m_settings_window || m_settings_window->isEditingGlobalSettings());
+  SettingsInterface* si =
+    global ? Host::Internal::GetBaseSettingsLayer() : m_settings_window->getEditingSettingsInterface();
+
+  // first device should clear mappings
+  bool tried_any = false;
+  bool mapped_any = false;
+  const int count = m_list->count();
+  for (int i = 0; i < count; i++)
+  {
+    const QListWidgetItem* item = m_list->item(i);
+    if (item->checkState() != Qt::Checked)
+      continue;
+
+    tried_any = true;
+
+    const QString identifier = item->data(Qt::UserRole).toString();
+    std::vector<std::pair<GenericInputBinding, std::string>> mapping =
+      InputManager::GetGenericBindingMapping(identifier.toStdString());
+    if (mapping.empty())
+    {
+      lock.unlock();
+      QtUtils::MessageBoxCritical(
+        this, tr("Automatic Mapping Failed"),
+        tr("No generic bindings were generated for device '%1'. The controller/source may not "
+           "support automatic mapping.")
+          .arg(identifier));
+      lock.lock();
+      continue;
+    }
+
+    mapped_any |= InputManager::MapController(*si, m_port, mapping, !mapped_any);
+  }
+
+  lock.unlock();
+
+  if (!tried_any)
+  {
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Automatic Mapping Failed"),
+                             tr("No devices were selected."));
+    return;
+  }
+
+  if (mapped_any)
+  {
+    if (global)
+    {
+      QtHost::SaveGameSettings(si, false);
+      g_emu_thread->reloadGameSettings(false);
+    }
+    else
+    {
+      QtHost::QueueSettingsSave();
+      g_emu_thread->reloadInputBindings();
+    }
+    accept();
+  }
+  else
+  {
+    reject();
+  }
+}

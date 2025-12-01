@@ -31,8 +31,7 @@ InputBindingWidget::InputBindingWidget(QWidget* parent, SettingsInterface* sif, 
                                        std::string section_name, std::string key_name)
   : QPushButton(parent)
 {
-  setMinimumWidth(220);
-  setMaximumWidth(220);
+  setFixedWidth(220);
 
   connect(this, &QPushButton::clicked, this, &InputBindingWidget::onClicked);
 
@@ -61,7 +60,30 @@ void InputBindingWidget::initialize(SettingsInterface* sif, InputBindingInfo::Ty
   reloadBinding();
 }
 
-void InputBindingWidget::updateText()
+void InputBindingWidget::updateElidedText()
+{
+  // https://github.com/qt/qtbase/blob/5dbb3b358950726447765e4fea7feb040a303860/src/widgets/styles/qcommonstyle.cpp#L4867
+  const int button_margin = style()->pixelMetric(QStyle::PM_ButtonMargin, nullptr, this);
+  const int frame_width = style()->pixelMetric(QStyle::PM_DefaultFrameWidth, nullptr, this);
+  const int text_width = std::max(1, width() - button_margin - frame_width * 2);
+  const QFontMetrics fm = fontMetrics();
+  QString elided = fm.elidedText(m_full_text, Qt::ElideMiddle, text_width);
+
+  // prefer removing the source part first
+  if (elided != m_full_text)
+  {
+    if (const qsizetype pos = m_full_text.indexOf('/'); pos >= 0)
+      elided = fm.elidedText(m_full_text.mid(pos + 1), Qt::ElideMiddle, text_width);
+  }
+
+  // fix up accelerators
+  if (elided.contains('&'))
+    elided = elided.replace(QStringLiteral("&"), QStringLiteral("&&"));
+
+  setText(elided);
+}
+
+void InputBindingWidget::updateTextAndToolTip()
 {
   static constexpr const char* help_text =
     QT_TR_NOOP("Left-click to change binding.\nShift-click to set multiple bindings.");
@@ -69,11 +91,13 @@ void InputBindingWidget::updateText()
 
   if (m_bindings.empty())
   {
+    m_full_text.clear();
     setText(QString());
     setToolTip(QStringLiteral("%1\n\n%2").arg(tr("No binding set.")).arg(tr(help_text)));
   }
   else if (m_bindings.size() > 1)
   {
+    m_full_text.clear();
     setText(tr("%n bindings", "", static_cast<int>(m_bindings.size())));
 
     // keep the full thing for the tooltip
@@ -82,18 +106,9 @@ void InputBindingWidget::updateText()
   }
   else
   {
-    QString binding_text(QString::fromStdString(m_bindings[0]));
-    setToolTip(binding_text);
-
-    // fix up accelerators, and if it's too long, ellipsise it
-    if (binding_text.contains('&'))
-      binding_text = binding_text.replace(QStringLiteral("&"), QStringLiteral("&&"));
-
-    const int max_length = (width() < 300) ? 35 : 60;
-    if (binding_text.length() > max_length)
-      binding_text = binding_text.left(max_length).append(QStringLiteral("..."));
-    setText(binding_text);
-    setToolTip(QStringLiteral("%1\n\n%2\n%3").arg(binding_text).arg(tr(help_text)).arg(tr(help_clear_text)));
+    m_full_text = QString::fromStdString(m_bindings[0]);
+    updateElidedText();
+    setToolTip(QStringLiteral("%1\n\n%2\n%3").arg(m_full_text).arg(tr(help_text)).arg(tr(help_clear_text)));
   }
 }
 
@@ -111,7 +126,8 @@ bool InputBindingWidget::eventFilter(QObject* watched, QEvent* event)
   else if (event_type == QEvent::KeyPress)
   {
     const QKeyEvent* key_event = static_cast<const QKeyEvent*>(event);
-    m_new_bindings.push_back(InputManager::MakeHostKeyboardKey(QtUtils::KeyEventToCode(key_event)));
+    if (const std::optional<u32> key = QtUtils::KeyEventToCode(key_event))
+      m_new_bindings.push_back(InputManager::MakeHostKeyboardKey(key.value()));
     return true;
   }
   else if ((event_type == QEvent::MouseButtonPress || event_type == QEvent::MouseButtonDblClick) &&
@@ -211,13 +227,21 @@ void InputBindingWidget::mouseReleaseEvent(QMouseEvent* e)
   QPushButton::mouseReleaseEvent(e);
 }
 
+void InputBindingWidget::resizeEvent(QResizeEvent* e)
+{
+  if (!m_full_text.isEmpty())
+    updateElidedText();
+
+  QPushButton::resizeEvent(e);
+}
+
 void InputBindingWidget::setNewBinding()
 {
   if (m_new_bindings.empty())
     return;
 
-  std::string new_binding(
-    InputManager::ConvertInputBindingKeysToString(m_bind_type, m_new_bindings.data(), m_new_bindings.size()));
+  const SmallString new_binding =
+    InputManager::ConvertInputBindingKeysToString(m_bind_type, m_new_bindings.data(), m_new_bindings.size());
   if (!new_binding.empty())
   {
     if (m_sif)
@@ -237,7 +261,7 @@ void InputBindingWidget::setNewBinding()
   }
 
   m_bindings.clear();
-  m_bindings.push_back(std::move(new_binding));
+  m_bindings.emplace_back(new_binding);
 }
 
 void InputBindingWidget::clearBinding()
@@ -264,21 +288,28 @@ void InputBindingWidget::reloadBinding()
 {
   m_bindings = m_sif ? m_sif->GetStringList(m_section_name.c_str(), m_key_name.c_str()) :
                        Host::GetBaseStringListSetting(m_section_name.c_str(), m_key_name.c_str());
-  updateText();
+  updateTextAndToolTip();
 }
 
 void InputBindingWidget::onClicked()
 {
-  if (m_bindings.size() > 1)
+  if (InputBindingInfo::IsEffectType(m_bind_type))
   {
-    openDialog();
-    return;
+    showEffectBindingDialog();
   }
+  else
+  {
+    if (m_bindings.size() > 1)
+    {
+      openDialog();
+      return;
+    }
 
-  if (isListeningForInput())
-    stopListeningForInput();
+    if (isListeningForInput())
+      stopListeningForInput();
 
-  startListeningForInput(TIMEOUT_FOR_SINGLE_BINDING);
+    startListeningForInput(TIMEOUT_FOR_SINGLE_BINDING);
+  }
 }
 
 void InputBindingWidget::onInputListenTimerTimeout()
@@ -290,6 +321,7 @@ void InputBindingWidget::onInputListenTimerTimeout()
     return;
   }
 
+  m_full_text.clear();
   setText(tr("Push Button/Axis... [%1]").arg(m_input_listen_remaining_seconds));
 }
 
@@ -302,10 +334,10 @@ void InputBindingWidget::startListeningForInput(u32 timeout_in_seconds)
   m_input_listen_timer = new QTimer(this);
   m_input_listen_timer->setSingleShot(false);
   m_input_listen_timer->start(1000);
-
-  m_input_listen_timer->connect(m_input_listen_timer, &QTimer::timeout, this,
-                                &InputBindingWidget::onInputListenTimerTimeout);
+  m_input_listen_timer->callOnTimeout(this, &InputBindingWidget::onInputListenTimerTimeout);
   m_input_listen_remaining_seconds = timeout_in_seconds;
+
+  m_full_text.clear();
   setText(tr("Push Button/Axis... [%1]").arg(m_input_listen_remaining_seconds));
 
   installEventFilter(this);
@@ -348,9 +380,11 @@ void InputBindingWidget::inputManagerHookCallback(InputBindingKey key, float val
     m_value_ranges.emplace_back(key, std::make_pair(initial_value, min_value));
   }
 
+  InputBindingDialog::logInputEvent(m_bind_type, key, value, initial_value, min_value);
+
   const float abs_value = std::abs(value);
-  const bool reverse_threshold =
-    (key.source_subtype == InputSubclass::ControllerAxis && std::abs(initial_value) > 0.5f);
+  const bool reverse_threshold = (key.source_subtype == InputSubclass::ControllerAxis &&
+                                  std::abs(initial_value) > 0.5f && std::abs(initial_value - min_value) > 0.1f);
 
   for (InputBindingKey& other_key : m_new_bindings)
   {
@@ -387,8 +421,7 @@ void InputBindingWidget::inputManagerHookCallback(InputBindingKey key, float val
 void InputBindingWidget::hookInputManager()
 {
   InputManager::SetHook([this](InputBindingKey key, float value) {
-    QMetaObject::invokeMethod(this, "inputManagerHookCallback", Qt::QueuedConnection, Q_ARG(InputBindingKey, key),
-                              Q_ARG(float, value));
+    QMetaObject::invokeMethod(this, &InputBindingWidget::inputManagerHookCallback, Qt::QueuedConnection, key, value);
     return InputInterceptHook::CallbackResult::StopProcessingEvent;
   });
 }
@@ -400,95 +433,116 @@ void InputBindingWidget::unhookInputManager()
 
 void InputBindingWidget::openDialog()
 {
-  InputBindingDialog binding_dialog(m_sif, m_bind_type, m_section_name, m_key_name, m_bindings,
-                                    QtUtils::GetRootWidget(this));
-  binding_dialog.exec();
+  InputBindingDialog* const dlg =
+    new InputBindingDialog(m_sif, m_bind_type, m_section_name, m_key_name, m_bindings, QtUtils::GetRootWidget(this));
+  dlg->setAttribute(Qt::WA_DeleteOnClose);
+  connect(dlg, &QDialog::finished, this, &InputBindingWidget::reloadBinding);
+  dlg->open();
+}
+
+void InputBindingWidget::showEffectBindingDialog()
+{
+  if (!g_emu_thread->getInputDeviceListModel()->hasEffectsOfType(m_bind_type))
+  {
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                             (m_bind_type == InputBindingInfo::Type::Motor) ?
+                               tr("No devices with vibration motors were detected.") :
+                               tr("No devices with LEDs were detected."));
+    return;
+  }
+
+  const QString full_key(QString::fromStdString(fmt::format("{}/{}", m_section_name, m_key_name)));
+
+  QDialog dlg(this);
+  dlg.setWindowTitle(full_key);
+  dlg.setFixedWidth(450);
+  dlg.setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+
+  QVBoxLayout* const main_layout = new QVBoxLayout(&dlg);
+
+  QHBoxLayout* const heading_layout = new QHBoxLayout();
+  QLabel* const icon = new QLabel(&dlg);
+  icon->setPixmap(QIcon::fromTheme(QStringLiteral("pushpin-line")).pixmap(32, 32));
+  QLabel* const heading =
+    new QLabel(tr("<strong>%1</strong><br>Select the device and effect to map this bind to.").arg(full_key), &dlg);
+  heading->setWordWrap(true);
+  heading_layout->addWidget(icon, 0, Qt::AlignTop | Qt::AlignLeft);
+  heading_layout->addWidget(heading, 1);
+  main_layout->addLayout(heading_layout);
+
+  QListWidget* const list = new QListWidget(&dlg);
+  list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+
+  // hook up selection to alter check state
+  connect(list, &QListWidget::itemSelectionChanged, [list]() {
+    const int count = list->count();
+    for (int i = 0; i < count; i++)
+      list->item(i)->setCheckState(Qt::Unchecked);
+
+    for (QListWidgetItem* item : list->selectedItems())
+      item->setCheckState(item->isSelected() ? Qt::Checked : Qt::Unchecked);
+  });
+
+  for (const auto& [type, key] : g_emu_thread->getInputDeviceListModel()->getEffectList())
+  {
+    if (type != m_bind_type)
+      continue;
+
+    const TinyString name = InputManager::ConvertInputBindingKeyToString(type, key);
+    if (name.empty())
+      continue;
+
+    const bool is_bound =
+      std::ranges::any_of(m_bindings, [&name](const std::string& other_name) { return (other_name == name.view()); });
+
+    QListWidgetItem* const item = new QListWidgetItem();
+    item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+    item->setCheckState(is_bound ? Qt::Checked : Qt::Unchecked);
+    item->setText(QStringLiteral("%1\n%2")
+                    .arg(QtUtils::StringViewToQString(name))
+                    .arg(g_emu_thread->getInputDeviceListModel()->getDeviceName(key)));
+    item->setData(Qt::UserRole, QtUtils::StringViewToQString(name));
+    item->setIcon(InputDeviceListModel::getIconForKey(key));
+    list->addItem(item);
+
+    item->setSelected(is_bound);
+  }
+
+  main_layout->addWidget(list);
+
+  QDialogButtonBox* const bbox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+  connect(bbox, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+  connect(bbox, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+  main_layout->addWidget(bbox);
+
+  if (dlg.exec() != QDialog::Accepted)
+    return;
+
+  m_bindings.clear();
+
+  const int count = list->count();
+  for (int i = 0; i < count; i++)
+  {
+    const QListWidgetItem* const item = list->item(i);
+    if (item->checkState() == Qt::Checked)
+      m_bindings.push_back(item->data(Qt::UserRole).toString().toStdString());
+  }
+
+  if (m_sif)
+  {
+    m_sif->SetStringList(m_section_name.c_str(), m_key_name.c_str(), m_bindings);
+    QtHost::SaveGameSettings(m_sif, false);
+    g_emu_thread->reloadGameSettings();
+  }
+  else
+  {
+    Host::SetBaseStringListSettingValue(m_section_name.c_str(), m_key_name.c_str(), m_bindings);
+    Host::CommitBaseSettingChanges();
+    if (m_bind_type == InputBindingInfo::Type::Pointer)
+      g_emu_thread->updateControllerSettings();
+    g_emu_thread->reloadInputBindings();
+  }
+
+  setNewBinding();
   reloadBinding();
-}
-
-InputVibrationBindingWidget::InputVibrationBindingWidget(QWidget* parent)
-{
-  connect(this, &QPushButton::clicked, this, &InputVibrationBindingWidget::onClicked);
-}
-
-InputVibrationBindingWidget::InputVibrationBindingWidget(QWidget* parent, ControllerSettingsWindow* dialog,
-                                                         std::string section_name, std::string key_name)
-{
-  setMinimumWidth(225);
-  setMaximumWidth(225);
-
-  connect(this, &QPushButton::clicked, this, &InputVibrationBindingWidget::onClicked);
-
-  setKey(dialog, std::move(section_name), std::move(key_name));
-}
-
-InputVibrationBindingWidget::~InputVibrationBindingWidget()
-{
-}
-
-void InputVibrationBindingWidget::setKey(ControllerSettingsWindow* dialog, std::string section_name,
-                                         std::string key_name)
-{
-  m_dialog = dialog;
-  m_section_name = std::move(section_name);
-  m_key_name = std::move(key_name);
-  m_binding = Host::GetBaseStringSettingValue(m_section_name.c_str(), m_key_name.c_str());
-  setText(QString::fromStdString(m_binding));
-}
-
-void InputVibrationBindingWidget::clearBinding()
-{
-  m_binding = {};
-  Host::DeleteBaseSettingValue(m_section_name.c_str(), m_key_name.c_str());
-  Host::CommitBaseSettingChanges();
-  g_emu_thread->reloadInputBindings();
-  setText(QString());
-}
-
-void InputVibrationBindingWidget::onClicked()
-{
-  QInputDialog dialog(QtUtils::GetRootWidget(this));
-
-  const QString full_key(
-    QStringLiteral("%1/%2").arg(QString::fromStdString(m_section_name)).arg(QString::fromStdString(m_key_name)));
-  const QString current(QString::fromStdString(m_binding));
-  QStringList input_options = g_emu_thread->getInputDeviceListModel()->getVibrationMotorList();
-  if (!current.isEmpty() && input_options.indexOf(current) < 0)
-  {
-    input_options.append(current);
-  }
-  else if (input_options.isEmpty())
-  {
-    QMessageBox::critical(QtUtils::GetRootWidget(this), tr("Error"),
-                          tr("No devices with vibration motors were detected."));
-    return;
-  }
-
-  QInputDialog input_dialog(this);
-  input_dialog.setWindowTitle(full_key);
-  input_dialog.setLabelText(tr("Select vibration motor for %1.").arg(full_key));
-  input_dialog.setInputMode(QInputDialog::TextInput);
-  input_dialog.setOptions(QInputDialog::UseListViewForComboBoxItems);
-  input_dialog.setComboBoxEditable(false);
-  input_dialog.setComboBoxItems(std::move(input_options));
-  input_dialog.setTextValue(current);
-  if (input_dialog.exec() == QDialog::Rejected)
-    return;
-
-  const QString new_value(input_dialog.textValue());
-  m_binding = new_value.toStdString();
-  Host::SetBaseStringSettingValue(m_section_name.c_str(), m_key_name.c_str(), m_binding.c_str());
-  Host::CommitBaseSettingChanges();
-  setText(new_value);
-}
-
-void InputVibrationBindingWidget::mouseReleaseEvent(QMouseEvent* e)
-{
-  if (e->button() == Qt::RightButton)
-  {
-    clearBinding();
-    return;
-  }
-
-  QPushButton::mouseReleaseEvent(e);
 }

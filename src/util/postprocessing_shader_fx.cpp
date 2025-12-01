@@ -90,7 +90,7 @@ static std::tuple<std::unique_ptr<reshadefx::codegen>, GPUShaderLanguage> Create
       if (rapi == RenderAPI::D3D12 && rapi_version >= 1200)
       {
         return std::make_tuple(std::unique_ptr<reshadefx::codegen>(reshadefx::create_codegen_spirv(
-                                 true, debug_info, uniforms_to_spec_constants, false, false)),
+                                 true, debug_info, uniforms_to_spec_constants, false, false, true)),
                                GPUShaderLanguage::SPV);
       }
       else
@@ -397,19 +397,7 @@ bool PostProcessing::ReShadeFXShader::LoadFromString(std::string name, std::stri
     }
   }
 
-  // Might go invalid when creating pipelines.
-  m_valid = true;
   return true;
-}
-
-bool PostProcessing::ReShadeFXShader::IsValid() const
-{
-  return m_valid;
-}
-
-bool PostProcessing::ReShadeFXShader::WantsDepthBuffer() const
-{
-  return m_wants_depth_buffer;
 }
 
 bool PostProcessing::ReShadeFXShader::CreateModule(s32 buffer_width, s32 buffer_height, reshadefx::codegen* cg,
@@ -1442,7 +1430,6 @@ GPUTexture* PostProcessing::ReShadeFXShader::GetTextureByID(TextureID id, GPUTex
 bool PostProcessing::ReShadeFXShader::CompilePipeline(GPUTexture::Format format, u32 width, u32 height, Error* error,
                                                       ProgressCallback* progress)
 {
-  m_valid = false;
   m_textures.clear();
   m_passes.clear();
   m_wants_depth_buffer = false;
@@ -1589,39 +1576,37 @@ bool PostProcessing::ReShadeFXShader::CompilePipeline(GPUTexture::Format format,
 
   progress->PopState();
 
-  m_valid = true;
   return true;
 }
 
-bool PostProcessing::ReShadeFXShader::ResizeOutput(GPUTexture::Format format, u32 width, u32 height, Error* error)
+bool PostProcessing::ReShadeFXShader::ResizeTargets(u32 source_width, u32 source_height,
+                                                    GPUTexture::Format target_format, u32 target_width,
+                                                    u32 target_height, u32 viewport_width, u32 viewport_height,
+                                                    Error* error)
 {
-  m_valid = false;
-
   for (Texture& tex : m_textures)
   {
     if (!tex.render_target)
       continue;
 
-    g_gpu_device->RecycleTexture(std::move(tex.texture));
-
-    const u32 t_width = (tex.render_target_width > 0) ? tex.render_target_width : width;
-    const u32 t_height = (tex.render_target_height > 0) ? tex.render_target_height : height;
-    tex.texture = g_gpu_device->FetchTexture(
-      t_width, t_height, 1, 1, 1, GPUTexture::Type::RenderTarget, tex.format,
-      tex.storage_access ? GPUTexture::Flags::AllowBindAsImage : GPUTexture::Flags::None, nullptr, 0, error);
-    if (!tex.texture)
-      return {};
+    const u32 t_width = (tex.render_target_width > 0) ? tex.render_target_width : target_width;
+    const u32 t_height = (tex.render_target_height > 0) ? tex.render_target_height : target_height;
+    if (!g_gpu_device->ResizeTexture(&tex.texture, t_width, t_height, GPUTexture::Type::RenderTarget, tex.format,
+                                     tex.storage_access ? GPUTexture::Flags::AllowBindAsImage : GPUTexture::Flags::None,
+                                     false, error))
+    {
+      return false;
+    }
   }
 
-  m_valid = true;
   return true;
 }
 
-GPUDevice::PresentResult PostProcessing::ReShadeFXShader::Apply(GPUTexture* input_color, GPUTexture* input_depth,
-                                                                GPUTexture* final_target, GSVector4i final_rect,
-                                                                s32 orig_width, s32 orig_height, s32 native_width,
-                                                                s32 native_height, u32 target_width, u32 target_height,
-                                                                float time)
+GPUDevice::PresentResult PostProcessing::ReShadeFXShader::Apply(GPUTexture* original_color, GPUTexture* input_color,
+                                                                GPUTexture* input_depth, GPUTexture* final_target,
+                                                                GSVector4i final_rect, s32 orig_width, s32 orig_height,
+                                                                s32 native_width, s32 native_height, u32 target_width,
+                                                                u32 target_height, float time)
 {
   GL_SCOPE_FMT("PostProcessingShaderFX {}", m_name);
 

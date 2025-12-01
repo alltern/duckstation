@@ -73,10 +73,10 @@ struct GPUThreadReconfigureCommand : public GPUThreadCommand
   Error* error_ptr;
   bool* out_result;
   std::optional<GPURenderer> renderer;
-  std::optional<bool> fullscreen;
   std::optional<bool> start_fullscreen_ui;
   GPUVSyncMode vsync_mode;
   bool allow_present_throttle;
+  bool fullscreen;
   bool force_recreate_device;
   bool upload_vram;
   GPUSettings settings;
@@ -164,6 +164,8 @@ struct GPUBackendUpdateDisplayCommand : public GPUThreadCommand
   float display_pixel_aspect_ratio;
 
   u16 X; // TODO: Can we get rid of this?
+
+  u8 gpu_busy_pct;
 
   bool interlaced_display_enabled : 1;
   bool interlaced_display_field : 1;

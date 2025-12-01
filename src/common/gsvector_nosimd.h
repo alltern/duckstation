@@ -1377,16 +1377,6 @@ public:
 
   GSVector4i srlv64(const GSVector4i& v) const { ALL_LANES_64(ret.U64[i] = U64[i] >> v.U64[i]); }
 
-  template<s64 v>
-  GSVector4i sra64() const
-  {
-    ALL_LANES_64(ret.S64[i] = S64[i] >> v);
-  }
-
-  GSVector4i sra64(s32 v) const { ALL_LANES_64(ret.S64[i] = S64[i] >> v); }
-
-  GSVector4i srav64(const GSVector4i& v) const { ALL_LANES_64(ret.S64[i] = S64[i] >> v.S64[i]); }
-
   GSVector4i add8(const GSVector4i& v) const { ALL_LANES_8(ret.S8[i] = S8[i] + v.S8[i]); }
 
   GSVector4i add16(const GSVector4i& v) const { ALL_LANES_16(ret.S16[i] = S16[i] + v.S16[i]); }
@@ -1759,20 +1749,29 @@ public:
   GSVector4() = default;
 
   constexpr static GSVector4 cxpr(float x, float y, float z, float w) { return GSVector4(cxpr_init, x, y, z, w); }
-
   constexpr static GSVector4 cxpr(float x) { return GSVector4(cxpr_init, x, x, x, x); }
 
   constexpr static GSVector4 cxpr(int x, int y, int z, int w) { return GSVector4(cxpr_init, x, y, z, w); }
-
   constexpr static GSVector4 cxpr(int x) { return GSVector4(cxpr_init, x, x, x, x); }
 
   constexpr static GSVector4 cxpr64(u64 x, u64 y) { return GSVector4(cxpr_init, x, y); }
-
   constexpr static GSVector4 cxpr64(u64 x) { return GSVector4(cxpr_init, x, x); }
 
   constexpr static GSVector4 cxpr64(double x, double y) { return GSVector4(cxpr_init, x, y); }
-
   constexpr static GSVector4 cxpr64(double x) { return GSVector4(cxpr_init, x, x); }
+
+  constexpr static GSVector4 cxpr_rgba32(u32 rgba)
+  {
+    return GSVector4(cxpr_init, static_cast<float>(rgba & 0xff), static_cast<float>((rgba >> 8) & 0xff),
+                     static_cast<float>((rgba >> 16) & 0xff), static_cast<float>((rgba >> 24) & 0xff));
+  }
+
+  constexpr static GSVector4 cxpr_unorm8(u32 rgba)
+  {
+    return GSVector4(cxpr_init, static_cast<float>(rgba & 0xff) / 255.0f,
+                     static_cast<float>((rgba >> 8) & 0xff) / 255.0f, static_cast<float>((rgba >> 16) & 0xff) / 255.0f,
+                     static_cast<float>((rgba >> 24) & 0xff) / 255.0f);
+  }
 
   ALWAYS_INLINE GSVector4(float x, float y, float z, float w)
   {

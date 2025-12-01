@@ -24,6 +24,14 @@ class ProgressCallback;
 namespace PostProcessing {
 class Shader;
 
+enum class ShaderType
+{
+  GLSL,
+  Reshade,
+  Slang,
+  MaxCount
+};
+
 struct ShaderOption
 {
   enum : u32
@@ -97,11 +105,13 @@ inline constexpr const char* DISPLAY_CHAIN_SECTION = "PostProcessing";
 inline constexpr const char* INTERNAL_CHAIN_SECTION = "InternalPostProcessing";
 
 bool IsEnabled(const SettingsInterface& si, const char* section);
+bool IsStageEnabled(const SettingsInterface& si, const char* section, u32 index);
 u32 GetStageCount(const SettingsInterface& si, const char* section);
 std::string GetStageShaderName(const SettingsInterface& si, const char* section, u32 index);
 std::vector<ShaderOption> GetStageOptions(const SettingsInterface& si, const char* section, u32 index);
 std::vector<ShaderOption> GetShaderOptions(const std::string& shader_name, Error* error);
 
+void SetStageEnabled(SettingsInterface& si, const char* section, u32 index, bool enabled);
 bool AddStage(SettingsInterface& si, const char* section, const std::string& shader_name, Error* error);
 void RemoveStage(SettingsInterface& si, const char* section, u32 index);
 void MoveStageUp(SettingsInterface& si, const char* section, u32 index);
@@ -119,6 +129,7 @@ public:
 
   ALWAYS_INLINE bool HasStages() const { return !m_stages.empty(); }
   ALWAYS_INLINE bool NeedsDepthBuffer() const { return m_needs_depth_buffer; }
+  ALWAYS_INLINE bool WantsUnscaledInput() const { return m_wants_unscaled_input; }
   ALWAYS_INLINE GPUTexture* GetInputTexture() const { return m_input_texture.get(); }
   ALWAYS_INLINE GPUTexture* GetOutputTexture() const { return m_output_texture.get(); }
 
@@ -135,8 +146,8 @@ public:
   /// Temporarily toggles post-processing on/off.
   void Toggle();
 
-  bool CheckTargets(GPUTexture::Format target_format, u32 target_width, u32 target_height,
-                    ProgressCallback* progress = nullptr);
+  bool CheckTargets(u32 source_width, u32 source_height, GPUTexture::Format target_format, u32 target_width,
+                    u32 target_height, u32 viewport_width, u32 viewport_height, ProgressCallback* progress = nullptr);
 
   GPUDevice::PresentResult Apply(GPUTexture* input_color, GPUTexture* input_depth, GPUTexture* final_target,
                                  const GSVector4i final_rect, s32 orig_width, s32 orig_height, s32 native_width,
@@ -148,21 +159,27 @@ private:
 
   const char* m_section;
 
-  GPUTexture::Format m_target_format = GPUTexture::Format::Unknown;
+  u32 m_source_width = 0;
+  u32 m_source_height = 0;
   u32 m_target_width = 0;
   u32 m_target_height = 0;
+  u32 m_viewport_width = 0;
+  u32 m_viewport_height = 0;
+  GPUTexture::Format m_target_format = GPUTexture::Format::Unknown;
   bool m_enabled = false;
   bool m_wants_depth_buffer = false;
   bool m_needs_depth_buffer = false;
+  bool m_wants_unscaled_input = false;
 
   std::vector<std::unique_ptr<PostProcessing::Shader>> m_stages;
   std::unique_ptr<GPUTexture> m_input_texture;
+  std::unique_ptr<GPUTexture> m_intermediate_texture;
   std::unique_ptr<GPUTexture> m_output_texture;
 
   static Timer::Value s_start_time;
 };
 
-// [display_name, filename]
-std::vector<std::pair<std::string, std::string>> GetAvailableShaderNames();
+std::vector<std::pair<std::string, ShaderType>> GetAvailableShaderNames();
+std::string_view GetShaderTypeDisplayName(ShaderType type);
 
 }; // namespace PostProcessing

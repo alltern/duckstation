@@ -38,17 +38,6 @@ public:
   ALWAYS_INLINE u32 getPortNumber() const { return m_port_number; }
   ALWAYS_INLINE const QIcon& getIcon() { return m_icon; }
 
-  static bool doMultipleDeviceAutomaticBinding(QWidget* parent, ControllerSettingsWindow* parent_dialog, u32 port);
-
-private Q_SLOTS:
-  void onTypeChanged();
-  void onAutomaticBindingClicked();
-  void onClearBindingsClicked();
-  void onBindingsClicked();
-  void onSettingsClicked();
-  void onMacrosClicked();
-  void onMultipleDeviceAutomaticBindingTriggered();
-
 private:
   void populateControllerTypes();
   void populateWidgets();
@@ -57,6 +46,14 @@ private:
   void updateHeaderToolButtons();
   void doDeviceAutomaticBinding(const QString& device);
   void saveAndRefresh();
+
+  void onTypeChanged();
+  void onAutomaticBindingClicked();
+  void onClearBindingsClicked();
+  void onBindingsClicked();
+  void onSettingsClicked();
+  void onMacrosClicked();
+  void onMultipleDeviceAutomaticBindingTriggered();
 
   Ui::ControllerBindingWidget m_ui;
 
@@ -90,7 +87,6 @@ private:
   void createWidgets(ControllerBindingWidget* parent);
 
   Ui::ControllerMacroWidget m_ui;
-  ControllerSettingsWindow* m_dialog;
   std::array<ControllerMacroEditWidget*, NUM_MACROS> m_macros;
 };
 
@@ -106,16 +102,15 @@ public:
 
   QString getSummary() const;
 
-private Q_SLOTS:
-  void onPressureChanged();
-  void onDeadzoneChanged();
-  void onSetFrequencyClicked();
-  void updateBinds();
-
 private:
   void modFrequency(s32 delta);
   void updateFrequency();
   void updateFrequencyText();
+
+  void onPressureChanged();
+  void onDeadzoneChanged();
+  void onSetFrequencyClicked();
+  void updateBinds();
 
   Ui::ControllerMacroEditWidget m_ui;
 
@@ -137,22 +132,37 @@ public:
   explicit ControllerCustomSettingsWidget(ControllerBindingWidget* parent);
   ~ControllerCustomSettingsWidget();
 
-private Q_SLOTS:
+private:
   void restoreDefaults();
 
-private:
   ControllerBindingWidget* m_parent;
 };
 
 //////////////////////////////////////////////////////////////////////////
 
-class ControllerCustomSettingsDialog : public QDialog
+class ControllerCustomSettingsDialog final : public QDialog
+{
+public:
+  ControllerCustomSettingsDialog(QWidget* parent, SettingsInterface* sif, const std::string& section,
+                                 std::span<const SettingInfo> settings, const char* tr_context,
+                                 const QString& window_title);
+  ~ControllerCustomSettingsDialog();
+};
+
+//////////////////////////////////////////////////////////////////////////
+
+class MultipleDeviceAutobindDialog final : public QDialog
 {
   Q_OBJECT
 
 public:
-  explicit ControllerCustomSettingsDialog(QWidget* parent, SettingsInterface* sif, const std::string& section,
-                                          std::span<const SettingInfo> settings, const char* tr_context,
-                                          const QString& window_title);
-  ~ControllerCustomSettingsDialog();
+  MultipleDeviceAutobindDialog(QWidget* parent, ControllerSettingsWindow* settings_window, u32 port);
+  ~MultipleDeviceAutobindDialog();
+
+private:
+  void doAutomaticBinding();
+
+  QListWidget* m_list;
+  ControllerSettingsWindow* m_settings_window;
+  u32 m_port;
 };

@@ -22,21 +22,12 @@ AudioSettingsWidget::AudioSettingsWidget(SettingsWindow* dialog, QWidget* parent
 
   m_ui.setupUi(this);
 
-  for (u32 i = 0; i < static_cast<u32>(AudioBackend::Count); i++)
-    m_ui.audioBackend->addItem(QString::fromUtf8(AudioStream::GetBackendDisplayName(static_cast<AudioBackend>(i))));
-
-  for (u32 i = 0; i < static_cast<u32>(AudioStretchMode::Count); i++)
-  {
-    m_ui.stretchMode->addItem(
-      QString::fromUtf8(AudioStream::GetStretchModeDisplayName(static_cast<AudioStretchMode>(i))));
-  }
-
-  SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.audioBackend, "Audio", "Backend",
-                                               &AudioStream::ParseBackendName, &AudioStream::GetBackendName,
-                                               AudioStream::DEFAULT_BACKEND);
-  SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.stretchMode, "Audio", "StretchMode",
-                                               &AudioStream::ParseStretchMode, &AudioStream::GetStretchModeName,
-                                               AudioStreamParameters::DEFAULT_STRETCH_MODE);
+  SettingWidgetBinder::BindWidgetToEnumSetting(
+    sif, m_ui.audioBackend, "Audio", "Backend", &AudioStream::ParseBackendName, &AudioStream::GetBackendName,
+    &AudioStream::GetBackendDisplayName, AudioStream::DEFAULT_BACKEND, AudioBackend::Count);
+  SettingWidgetBinder::BindWidgetToEnumSetting(
+    sif, m_ui.stretchMode, "Audio", "StretchMode", &AudioStream::ParseStretchMode, &AudioStream::GetStretchModeName,
+    &AudioStream::GetStretchModeDisplayName, AudioStreamParameters::DEFAULT_STRETCH_MODE, AudioStretchMode::Count);
   SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.bufferMS, "Audio", "BufferMS",
                                               AudioStreamParameters::DEFAULT_BUFFER_MS);
   SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.outputLatencyMS, "Audio", "OutputLatencyMS",
@@ -46,7 +37,7 @@ AudioSettingsWidget::AudioSettingsWidget(SettingsWindow* dialog, QWidget* parent
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.muteCDAudio, "CDROM", "MuteCDAudio", false);
   connect(m_ui.audioBackend, &QComboBox::currentIndexChanged, this, &AudioSettingsWidget::updateDriverNames);
   connect(m_ui.stretchMode, &QComboBox::currentIndexChanged, this, &AudioSettingsWidget::onStretchModeChanged);
-  connect(m_ui.stretchSettings, &QToolButton::clicked, this, &AudioSettingsWidget::onStretchSettingsClicked);
+  connect(m_ui.stretchSettings, &QPushButton::clicked, this, &AudioSettingsWidget::onStretchSettingsClicked);
   onStretchModeChanged();
   updateDriverNames();
 
@@ -75,8 +66,8 @@ AudioSettingsWidget::AudioSettingsWidget(SettingsWindow* dialog, QWidget* parent
                                                         tr("%"), "Audio", "FastForwardVolume", 100);
     SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.muted, "Audio", "OutputMuted", false);
   }
-  connect(m_ui.resetVolume, &QToolButton::clicked, this, [this]() { resetVolume(false); });
-  connect(m_ui.resetFastForwardVolume, &QToolButton::clicked, this, [this]() { resetVolume(true); });
+  connect(m_ui.resetVolume, &QPushButton::clicked, this, [this]() { resetVolume(false); });
+  connect(m_ui.resetFastForwardVolume, &QPushButton::clicked, this, [this]() { resetVolume(true); });
 
   dialog->registerWidgetHelp(
     m_ui.audioBackend, tr("Audio Backend"), QStringLiteral("Cubeb"),
@@ -147,7 +138,7 @@ void AudioSettingsWidget::updateDriverNames()
   const AudioBackend backend = getEffectiveBackend();
   std::vector<std::pair<std::string, std::string>> names = AudioStream::GetDriverNames(backend);
 
-  m_ui.driver->disconnect();
+  SettingWidgetBinder::DisconnectWidget(m_ui.driver);
   m_ui.driver->clear();
   if (names.empty())
   {
@@ -250,7 +241,7 @@ void AudioSettingsWidget::updateVolumeLabel()
 
 void AudioSettingsWidget::onMinimalOutputLatencyChecked(Qt::CheckState state)
 {
-  const bool minimal = m_dialog->getEffectiveBoolValue("SPU2/Output", "OutputLatencyMinimal", false);
+  const bool minimal = m_dialog->getEffectiveBoolValue("Audio", "OutputLatencyMinimal", false);
   m_ui.outputLatencyMS->setEnabled(!minimal);
   updateLatencyLabel();
 }
@@ -290,9 +281,10 @@ void AudioSettingsWidget::onOutputMutedChanged(int new_state)
 
 void AudioSettingsWidget::onStretchSettingsClicked()
 {
-  QDialog dlg(QtUtils::GetRootWidget(this));
+  QDialog* const dlg = new QDialog(QtUtils::GetRootWidget(this));
+  dlg->setAttribute(Qt::WA_DeleteOnClose);
   Ui::AudioStretchSettingsDialog dlgui;
-  dlgui.setupUi(&dlg);
+  dlgui.setupUi(dlg);
   dlgui.icon->setPixmap(QIcon::fromTheme(QStringLiteral("volume-up-line")).pixmap(32));
   dlgui.buttonBox->button(QDialogButtonBox::Close)->setDefault(true);
 
@@ -311,8 +303,8 @@ void AudioSettingsWidget::onStretchSettingsClicked()
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, dlgui.useAAFilter, "Audio", "StretchUseAAFilter",
                                                AudioStreamParameters::DEFAULT_STRETCH_USE_AA_FILTER);
 
-  connect(dlgui.buttonBox, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
-  connect(dlgui.buttonBox->button(QDialogButtonBox::RestoreDefaults), &QPushButton::clicked, this, [this, &dlg]() {
+  connect(dlgui.buttonBox, &QDialogButtonBox::rejected, dlg, &QDialog::accept);
+  connect(dlgui.buttonBox->button(QDialogButtonBox::RestoreDefaults), &QPushButton::clicked, this, [this, dlg]() {
     m_dialog->setIntSettingValue("Audio", "StretchSequenceLengthMS",
                                  m_dialog->isPerGameSettings() ?
                                    std::nullopt :
@@ -334,12 +326,12 @@ void AudioSettingsWidget::onStretchSettingsClicked()
                                     std::nullopt :
                                     std::optional<bool>(AudioStreamParameters::DEFAULT_STRETCH_USE_AA_FILTER));
 
-    dlg.reject();
+    dlg->reject();
 
     QMetaObject::invokeMethod(this, &AudioSettingsWidget::onStretchSettingsClicked, Qt::QueuedConnection);
   });
 
-  dlg.exec();
+  dlg->open();
 }
 
 void AudioSettingsWidget::resetVolume(bool fast_forward)

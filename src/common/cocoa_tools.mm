@@ -4,10 +4,13 @@
 #include "cocoa_tools.h"
 #include "assert.h"
 #include "error.h"
+#include "log.h"
 #include "small_string.h"
 
 #include "fmt/format.h"
 
+#include <AppKit/AppKit.h>
+#include <Cocoa/Cocoa.h>
 #include <cinttypes>
 #include <dlfcn.h>
 #include <mach/mach_time.h>
@@ -89,31 +92,36 @@ std::optional<std::string> CocoaTools::GetBundlePath()
 std::optional<std::string> CocoaTools::GetNonTranslocatedBundlePath()
 {
   // See https://objective-see.com/blog/blog_0x15.html
-
-  NSURL* url = [NSURL fileURLWithPath:[[NSBundle mainBundle] bundlePath]];
-  if (!url)
-    return std::nullopt;
-
-  if (void* handle = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY))
+  std::optional<std::string> ret;
+  @autoreleasepool
   {
-    auto IsTranslocatedURL =
-      reinterpret_cast<Boolean (*)(CFURLRef path, bool* isTranslocated, CFErrorRef* __nullable error)>(
-        dlsym(handle, "SecTranslocateIsTranslocatedURL"));
-    auto CreateOriginalPathForURL =
-      reinterpret_cast<CFURLRef __nullable (*)(CFURLRef translocatedPath, CFErrorRef* __nullable error)>(
-        dlsym(handle, "SecTranslocateCreateOriginalPathForURL"));
-    bool is_translocated = false;
-    if (IsTranslocatedURL)
-      IsTranslocatedURL((__bridge CFURLRef)url, &is_translocated, nullptr);
-    if (is_translocated)
+    NSURL* url = [NSURL fileURLWithPath:[[NSBundle mainBundle] bundlePath]];
+    if (!url)
+      return ret;
+
+    if (void* handle = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY))
     {
-      if (CFURLRef actual = CreateOriginalPathForURL((__bridge CFURLRef)url, nullptr))
-        url = (__bridge_transfer NSURL*)actual;
+      auto IsTranslocatedURL =
+        reinterpret_cast<Boolean (*)(CFURLRef path, bool* isTranslocated, CFErrorRef* __nullable error)>(
+          dlsym(handle, "SecTranslocateIsTranslocatedURL"));
+      auto CreateOriginalPathForURL =
+        reinterpret_cast<CFURLRef __nullable (*)(CFURLRef translocatedPath, CFErrorRef* __nullable error)>(
+          dlsym(handle, "SecTranslocateCreateOriginalPathForURL"));
+      bool is_translocated = false;
+      if (IsTranslocatedURL)
+        IsTranslocatedURL((__bridge CFURLRef)url, &is_translocated, nullptr);
+      if (is_translocated)
+      {
+        if (CFURLRef actual = CreateOriginalPathForURL((__bridge CFURLRef)url, nullptr))
+          url = (__bridge NSURL*)actual;
+      }
+      dlclose(handle);
     }
-    dlclose(handle);
+
+    ret = std::string([url fileSystemRepresentation]);
   }
 
-  return std::string([url fileSystemRepresentation]);
+  return ret;
 }
 
 bool CocoaTools::DelayedLaunch(std::string_view file, std::span<const std::string_view> args)
@@ -141,4 +149,132 @@ bool CocoaTools::DelayedLaunch(std::string_view file, std::span<const std::strin
     [task setArguments:@[ @"-c", [NSString stringWithUTF8String:task_args.c_str()] ]];
     return [task launchAndReturnError:nil];
   }
+}
+
+std::optional<std::pair<int, int>> CocoaTools::GetViewSizeInPixels(const void* view)
+{
+  std::optional<std::pair<int, int>> ret;
+  if (view)
+  {
+    NSView* nsview = (__bridge NSView*)view;
+    const NSSize size = [nsview convertSizeToBacking:nsview.frame.size];
+    ret = std::make_pair(static_cast<int>(size.width), static_cast<int>(size.height));
+  }
+
+  return ret;
+}
+
+std::optional<double> CocoaTools::GetViewRealScalingFactor(const void* view)
+{
+  if (!view)
+    return std::nullopt;
+
+  NSView* const nsview = (__bridge NSView*)view;
+  NSWindow* const nswindow = nsview.window;
+  if (nswindow == nil)
+    return std::nullopt;
+
+  NSScreen* const nsscreen = nswindow.screen;
+  if (nsscreen == nil)
+    return std::nullopt;
+
+  const u32 did = [[nsscreen.deviceDescription valueForKey:@"NSScreenNumber"] unsignedIntValue];
+  const NSArray* all_modes = (__bridge NSArray*)CGDisplayCopyAllDisplayModes(did, nil);
+  if (all_modes == nil)
+  {
+    GENERIC_LOG(Log::Channel::WindowInfo, Log::Level::Dev, Log::Color::Default,
+                "GetViewRealScalingFactor(): CGDisplayCopyAllDisplayModes() failed");
+    return std::nullopt;
+  }
+
+  u32 max_width = 0;
+  for (NSUInteger i = 0; i < all_modes.count; i++)
+    max_width = std::max(max_width, static_cast<u32>(CGDisplayModeGetPixelWidth((CGDisplayModeRef)all_modes[i])));
+  CFRelease(all_modes);
+  if (max_width == 0)
+  {
+    GENERIC_LOG(Log::Channel::WindowInfo, Log::Level::Dev, Log::Color::Default,
+                "GetViewRealScalingFactor(): Max width is zero");
+    return std::nullopt;
+  }
+
+  // Sanity check: Scale should not be less than 100%, and cannot be more than 200%.
+  const CGFloat frame_width = nsscreen.frame.size.width;
+  const CGFloat scale = static_cast<CGFloat>(max_width) / frame_width;
+  GENERIC_LOG(Log::Channel::WindowInfo, Log::Level::Dev, Log::Color::Default,
+              "GetViewRealScalingFactor(): MaxWidth={}, FrameWidth={}, Scale={}", max_width, frame_width, scale);
+  if (scale < 1.0f)
+    return std::nullopt;
+
+  return static_cast<double>(scale);
+}
+
+void Y_OnAssertFailed(const char* szMessage, const char* szFunction, const char* szFile, unsigned uLine)
+{
+  if (![NSThread isMainThread])
+  {
+    dispatch_sync(dispatch_get_main_queue(),
+                  [szMessage, szFunction, szFile, uLine]() { Y_OnAssertFailed(szMessage, szFunction, szFile, uLine); });
+    return;
+  }
+
+  char szMsg[512];
+  std::snprintf(szMsg, sizeof(szMsg), "%s in function %s (%s:%u)\n", szMessage, szFunction, szFile, uLine);
+  std::fputs(szMsg, stderr);
+  std::fflush(stderr);
+
+  @autoreleasepool
+  {
+    NSAlert* alert = [[[NSAlert alloc] init] autorelease];
+    [alert setMessageText:@"Assertion Failed"];
+
+    NSString* text = [NSString stringWithFormat:@"%s in function %s (%s:%u)\nPress Abort to exit, Break to break to "
+                                                @"debugger, or Ignore to attempt to continue.",
+                                                szMessage, szFunction, szFile, uLine];
+    [alert setInformativeText:text];
+    [alert setAlertStyle:NSAlertStyleCritical];
+    [alert addButtonWithTitle:@"Abort"];
+    [alert addButtonWithTitle:@"Break"];
+    [alert addButtonWithTitle:@"Ignore"];
+
+    const NSModalResponse response = [alert runModal];
+    if (response == NSAlertFirstButtonReturn)
+      std::abort();
+    else if (response == NSAlertSecondButtonReturn)
+      __builtin_debugtrap();
+  }
+}
+
+[[noreturn]] void Y_OnPanicReached(const char* szMessage, const char* szFunction, const char* szFile, unsigned uLine)
+{
+  if (![NSThread isMainThread])
+  {
+    dispatch_sync(dispatch_get_main_queue(),
+                  [szMessage, szFunction, szFile, uLine]() { Y_OnAssertFailed(szMessage, szFunction, szFile, uLine); });
+  }
+  else
+  {
+    char szMsg[512];
+    std::snprintf(szMsg, sizeof(szMsg), "%s in function %s (%s:%u)\n", szMessage, szFunction, szFile, uLine);
+
+    @autoreleasepool
+    {
+      NSAlert* alert = [[[NSAlert alloc] init] autorelease];
+      [alert setMessageText:@"Critical Error"];
+
+      NSString* text =
+        [NSString stringWithFormat:@"%s in function %s (%s:%u)\nDo you want to attempt to break into a debugger?",
+                                   szMessage, szFunction, szFile, uLine];
+      [alert setInformativeText:text];
+      [alert setAlertStyle:NSAlertStyleCritical];
+      [alert addButtonWithTitle:@"Abort"];
+      [alert addButtonWithTitle:@"Break"];
+
+      const NSModalResponse response = [alert runModal];
+      if (response == NSAlertSecondButtonReturn)
+        __builtin_debugtrap();
+    }
+  }
+
+  std::abort();
 }

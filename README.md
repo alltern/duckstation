@@ -6,8 +6,6 @@
 
 **Latest Builds for Windows 10/11 (x64/ARM64), Linux (AppImage x64/ARM32/ARM64), and macOS (11.0+ Universal):** https://github.com/stenzek/duckstation/releases/tag/latest
 
-**Game Compatibility List:** https://docs.google.com/spreadsheets/d/e/2PACX-1vRE0jjiK_aldpICoy5kVQlpk2f81Vo6P4p9vfg4d7YoTOoDlH4PQHoXjTD2F7SdN8SSBLoEAItaIqQo/pubhtml
-
 **Discord Server:** https://www.duckstation.org/discord.html
 
 DuckStation is an simulator/emulator of the Sony PlayStation(TM) console, focusing on playability, speed, and long-term maintainability. The goal is to be as accurate as possible while maintaining performance suitable for low-end devices. "Hack" options are discouraged, the default configuration should support all playable games with only some of the enhancements having compatibility issues.
@@ -35,7 +33,7 @@ Other features include:
  - Motion adaptive deinterlacing.
  - Adaptive downsampling filter.
  - Screen rotation for vertical or "TATE" shmup games.
- - Post processing shader chains (GLSL and Reshade FX).
+ - Post processing shader chains (GLSL, Reshade FX and Slang Presets).
  - Border overlays/bezels displayed around game content.
  - "Fast boot" for skipping BIOS splash/intro.
  - Save state support, with runahead and rewind.
@@ -68,7 +66,7 @@ Other features include:
 
 ## System Requirements
  - A CPU faster than a potato. But it needs to be x86_64, AArch32/armv7, AArch64/ARMv8, or RISC-V/RV64.
- - For the hardware renderers, a GPU capable of OpenGL 3.1/OpenGL ES 3.1/Direct3D 11 Feature Level 10.0 (or Vulkan 1.0) and above. So, basically anything made in the last 10 years or so.
+ - A GPU capable of OpenGL 3.1/OpenGL ES 3.1/Direct3D 11 Feature Level 10.0/Vulkan 1.0. So, basically anything made in the last 10 years or so.
  - SDL, XInput or DInput compatible game controller (e.g. XB360/XBOne/XBSeries). DualShock 3 users on Windows will need to install the official DualShock 3 drivers included as part of PlayStation Now.
 
 ## Downloading and running
@@ -96,7 +94,7 @@ Once downloaded and extracted, you can launch the emulator with `duckstation-qt-
 
 ### Linux
 
-DuckStation is provided for x86_64/ARM32/ARM64 Linux in AppImage (recommended) and Flatpak (not recommended) formats.
+DuckStation is provided for x86_64/ARM32/ARM64 Linux in AppImage formats.
 
 #### AppImage
 
@@ -105,21 +103,7 @@ The AppImages require a distribution equivalent to Ubuntu 22.04 or newer to run.
  - Go to https://github.com/stenzek/duckstation/releases/tag/latest, and download `duckstation-x64.AppImage`.
  - Run `chmod a+x` on the downloaded AppImage -- following this step, the AppImage can be run like a typical executable.
 
-#### Flatpak
-
-Due to various Flatpak limitations and Flathub randomly breaking regularly, **the Flatpak package is not recommended**. **We recommend that you use the AppImage instead.**
-
- - Go to https://github.com/stenzek/duckstation/releases/tag/latest, and download `duckstation-x64.flatpak`.
- - Run `flatpak install ./duckstation-x64.flatpak`.
-
-or, if you have FlatHub set up:
- - Run `flatpak install org.duckstation.DuckStation`.
-
-Use `flatpak run org.duckstation.DuckStation` to start, or select `DuckStation` in the launcher of your desktop environment. Follow the Setup Wizard to get started.
-
-**As of 2025/07/26, with the aforementioned issues and a lack of interest from users, the Flatpak package is deprecated. Future updates are not guaranteed.**
-
-To migrate your data from the Flatpak package to the AppImage, you can run the following command:
+If you were previously using the Flatpak package, to migrate your data from the Flatpak to the AppImage, you can run the following command:
 ```bash
 mv ~/.var/app/org.duckstation.DuckStation/config/duckstation ~/.local/share
 ```
@@ -130,7 +114,7 @@ You will need to re-add your game directories after switching to the AppImage.
 
 Universal macOS builds are provided for both x86_64 (Intel) and ARM64 (Apple Silicon).
 
-macOS Big Sur (11.0) is required, as this is also the minimum requirement for Qt.
+macOS Ventura (13.0) is required, as this is also the minimum requirement for Qt.
 
 To download:
  - Go to https://github.com/stenzek/duckstation/releases/tag/latest, and download `duckstation-mac-release.zip`.
@@ -164,7 +148,7 @@ For example, if your disc image was named `Spyro3.cue`, you would place the SBI 
 
 CHD images with built-in subchannel information are also supported.
 
-If you are playing directly from a disc and your CD/DVD drive does not support subchannel reading, or has a skew with the returned SubQ, you can place the SBI file in the `subchannel` directory under the user directory, with the serial or title of the game.
+If you are playing directly from a disc and your CD/DVD drive does not support subchannel reading, or has a skew with the returned SubQ, you can place the SBI file in the `subchannels` directory under the user directory, with the serial or title of the game.
 
 ### Cheats and patch database
 
@@ -176,7 +160,7 @@ Each release includes the latest version of the database, however you are free t
 
 ### Windows
 Requirements:
- - Visual Studio 2022
+ - Visual Studio 2026 or newer with the "Desktop development with C++" workload installed.
 
 1. Clone the respository: `git clone https://github.com/stenzek/duckstation.git`.
 2. Download the dependencies pack from https://github.com/stenzek/duckstation-ext-qt-minimal/releases/download/latest/deps-x64.7z, and extract it to `dep\msvc`.
@@ -197,11 +181,6 @@ autoconf automake build-essential clang cmake curl extra-cmake-modules git libas
 Fedora package names:
 ```
 alsa-lib-devel autoconf automake brotli-devel clang cmake dbus-devel egl-wayland-devel extra-cmake-modules fontconfig-devel gcc-c++ gtk3-devel libavcodec-free-devel libavformat-free-devel libavutil-free-devel libcurl-devel libdecor-devel libevdev-devel libICE-devel libinput-devel libSM-devel libswresample-free-devel libswscale-free-devel libX11-devel libXau-devel libxcb-devel libXcomposite-devel libXcursor-devel libXext-devel libXfixes-devel libXft-devel libXi-devel libxkbcommon-devel libxkbcommon-x11-devel libXpresent-devel libXrandr-devel libXrender-devel libtool lld llvm make mesa-libEGL-devel mesa-libGL-devel nasm ninja-build openssl-devel patch pcre2-devel perl-Digest-SHA pipewire-devel pulseaudio-libs-devel systemd-devel wayland-devel xcb-util-cursor-devel xcb-util-devel xcb-util-errors-devel xcb-util-image-devel xcb-util-keysyms-devel xcb-util-renderutil-devel xcb-util-wm-devel xcb-util-xrm-devel zlib-devel
-```
-
-Arch package names:
-```
-base-devel clang cmake curl dbus extra-cmake-modules freetype git libjpeg-turbo libpng libwebp libx11 libxrandr lld llvm ninja qt6-base qt6-imageformats qt6-svg qt6-tools wayland zstd
 ```
 
 #### Building

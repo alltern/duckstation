@@ -30,14 +30,12 @@ public:
 
   QPaintEngine* paintEngine() const override;
 
-  int scaledWindowWidth() const;
-  int scaledWindowHeight() const;
-
   std::optional<WindowInfo> getWindowInfo(RenderAPI render_api, Error* error);
 
   void updateRelativeMode(bool enabled);
   void updateCursor(bool hidden);
 
+  void checkForSizeChange();
   void handleCloseEvent(QCloseEvent* event);
   void destroy();
 
@@ -65,24 +63,20 @@ private:
   bool m_cursor_hidden = false;
   bool m_destroying = false;
 
-  std::vector<u32> m_keys_pressed_with_modifiers;
+  std::vector<int> m_keys_pressed_with_modifiers;
 
-  u32 m_last_window_width = 0;
+  QSize m_last_window_size;
   u32 m_last_window_height = 0;
-  float m_last_window_scale = 1.0f;
+  qreal m_last_window_scale = 1;
 
   const char* m_window_position_key = nullptr;
 };
 
 class DisplayContainer final : public QStackedWidget
 {
-  Q_OBJECT
-
 public:
   DisplayContainer();
   ~DisplayContainer();
-
-  static bool isNeeded(bool fullscreen, bool render_to_main);
 
   void setDisplayWidget(DisplayWidget* widget);
   DisplayWidget* removeDisplayWidget();
@@ -96,8 +90,6 @@ private:
 
 class AuxiliaryDisplayWidget final : public QWidget
 {
-  Q_OBJECT
-
 public:
   explicit AuxiliaryDisplayWidget(QWidget* parent, u32 width, u32 height, const QString& title, void* userdata);
   ~AuxiliaryDisplayWidget();
@@ -113,8 +105,7 @@ protected:
 
 private:
   void* m_userdata = nullptr;
-  u32 m_last_window_width = 0;
-  u32 m_last_window_height = 0;
-  float m_last_window_scale = 1.0f;
+  QSize m_last_window_size;
+  qreal m_last_window_scale = 1;
   bool m_destroying = false;
 };

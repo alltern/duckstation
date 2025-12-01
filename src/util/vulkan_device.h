@@ -126,7 +126,6 @@ public:
   void UnmapVertexBuffer(u32 vertex_size, u32 vertex_count) override;
   void MapIndexBuffer(u32 index_count, DrawIndex** map_ptr, u32* map_space, u32* map_base_index) override;
   void UnmapIndexBuffer(u32 used_index_count) override;
-  void PushUniformBuffer(const void* data, u32 data_size) override;
   void* MapUniformBuffer(u32 size) override;
   void UnmapUniformBuffer(u32 size) override;
   void SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds,
@@ -137,10 +136,19 @@ public:
   void SetViewport(const GSVector4i rc) override;
   void SetScissor(const GSVector4i rc) override;
   void Draw(u32 vertex_count, u32 base_vertex) override;
+  void DrawWithPushConstants(u32 vertex_count, u32 base_vertex, const void* push_constants,
+                             u32 push_constants_size) override;
   void DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex) override;
+  void DrawIndexedWithPushConstants(u32 index_count, u32 base_index, u32 base_vertex, const void* push_constants,
+                                    u32 push_constants_size) override;
   void DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type) override;
+  void DrawIndexedWithBarrierWithPushConstants(u32 index_count, u32 base_index, u32 base_vertex,
+                                               const void* push_constants, u32 push_constants_size,
+                                               DrawBarrier type) override;
   void Dispatch(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x, u32 group_size_y,
                 u32 group_size_z) override;
+  void DispatchWithPushConstants(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x, u32 group_size_y,
+                                 u32 group_size_z, const void* push_constants, u32 push_constants_size) override;
 
   bool SetGPUTimingEnabled(bool enabled) override;
   float GetAndResetAccumulatedGPUTime() override;
@@ -241,7 +249,7 @@ public:
   void UnbindTextureBuffer(VulkanTextureBuffer* buf);
 
 protected:
-  bool CreateDeviceAndMainSwapChain(std::string_view adapter, FeatureMask disabled_features, const WindowInfo& wi,
+  bool CreateDeviceAndMainSwapChain(std::string_view adapter, CreateFlags create_flags, const WindowInfo& wi,
                                     GPUVSyncMode vsync_mode, bool allow_present_throttle,
                                     const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
                                     std::optional<bool> exclusive_fullscreen_control, Error* error) override;
@@ -329,16 +337,16 @@ private:
   static bool SelectInstanceExtensions(ExtensionList* extension_list, const WindowInfo& wi, OptionalExtensions* oe,
                                        bool enable_debug_utils);
   bool CreateDevice(VkPhysicalDevice physical_device, VkSurfaceKHR surface, bool enable_validation_layer,
-                    FeatureMask disabled_features, Error* error);
+                    CreateFlags create_flags, Error* error);
   bool EnableOptionalDeviceExtensions(VkPhysicalDevice physical_device,
                                       std::span<const VkExtensionProperties> available_extensions,
                                       ExtensionList& enabled_extensions, VkPhysicalDeviceFeatures& enabled_features,
                                       bool enable_surface, Error* error);
-  void SetFeatures(FeatureMask disabled_features, VkPhysicalDevice physical_device,
+  void SetFeatures(CreateFlags create_flags, VkPhysicalDevice physical_device,
                    const VkPhysicalDeviceFeatures& vk_features);
 
   static GPUDriverType GuessDriverType(const VkPhysicalDeviceProperties& device_properties,
-                                        const VkPhysicalDeviceDriverProperties& driver_properties);
+                                       const VkPhysicalDeviceDriverProperties& driver_properties);
   static u32 GetMaxMultisamples(VkPhysicalDevice physical_device, const VkPhysicalDeviceProperties& properties);
 
   bool CreateAllocator();
@@ -367,10 +375,12 @@ private:
 
   /// Applies any changed state.
   static PipelineLayoutType GetPipelineLayoutType(GPUPipeline::RenderPassFlag flags);
-  VkPipelineLayout GetCurrentVkPipelineLayout() const;
+  VkPipelineLayout GetCurrentVkPipelineLayout(bool is_compute) const;
   void SetInitialPipelineState();
   void PreDrawCheck();
   void PreDispatchCheck();
+  void PushUniformBuffer(bool is_compute, const void* data, u32 data_size);
+  void SubmitDrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type);
 
   template<GPUPipeline::Layout layout>
   bool UpdateDescriptorSetsForLayout(u32 dirty);

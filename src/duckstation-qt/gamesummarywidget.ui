@@ -10,13 +10,6 @@
     <height>562</height>
    </rect>
   </property>
-  <property name="windowTitle">
-   <string>Dialog</string>
-  </property>
-  <property name="windowIcon">
-   <iconset>
-    <normaloff>:/icons/duck.png</normaloff>:/icons/duck.png</iconset>
-  </property>
   <layout class="QGridLayout" name="gridLayout">
    <property name="leftMargin">
     <number>0</number>
@@ -52,14 +45,10 @@
     </widget>
    </item>
    <item row="1" column="1">
-    <widget class="QLineEdit" name="title">
-     <property name="placeholderText">
-      <string>Clear the line to restore the original title...</string>
-     </property>
-    </widget>
+    <widget class="QLineEdit" name="title"/>
    </item>
    <item row="1" column="2">
-    <widget class="QToolButton" name="restoreTitle">
+    <widget class="QPushButton" name="restoreTitle">
      <property name="enabled">
       <bool>false</bool>
      </property>
@@ -131,7 +120,7 @@
     </widget>
    </item>
    <item row="4" column="2">
-    <widget class="QToolButton" name="restoreRegion">
+    <widget class="QPushButton" name="restoreRegion">
      <property name="enabled">
       <bool>false</bool>
      </property>
@@ -171,23 +160,19 @@
      </property>
     </widget>
    </item>
-   <item row="6" column="1" colspan="2">
-    <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,0">
-     <item>
-      <widget class="QComboBox" name="compatibility">
-       <property name="enabled">
-        <bool>false</bool>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QToolButton" name="compatibilityComments">
-       <property name="icon">
-        <iconset theme="information-line"/>
-       </property>
-      </widget>
-     </item>
-    </layout>
+   <item row="6" column="1">
+    <widget class="QComboBox" name="compatibility">
+     <property name="enabled">
+      <bool>false</bool>
+     </property>
+    </widget>
+   </item>
+   <item row="6" column="2">
+    <widget class="QPushButton" name="compatibilityComments">
+     <property name="icon">
+      <iconset theme="information-line"/>
+     </property>
+    </widget>
    </item>
    <item row="7" column="0">
     <widget class="QLabel" name="label_11">
@@ -274,20 +259,7 @@
     </widget>
    </item>
    <item row="12" column="1" colspan="2">
-    <layout class="QHBoxLayout" name="verifyLayout" stretch="0,1,0">
-     <item>
-      <spacer name="verifySpacer">
-       <property name="orientation">
-        <enum>Qt::Orientation::Horizontal</enum>
-       </property>
-       <property name="sizeHint" stdset="0">
-        <size>
-         <width>40</width>
-         <height>20</height>
-        </size>
-       </property>
-      </spacer>
-     </item>
+    <layout class="QHBoxLayout" name="verifyLayout" stretch="1,0">
      <item>
       <widget class="QLineEdit" name="revision">
        <property name="minimumSize">
@@ -311,16 +283,19 @@
     </layout>
    </item>
    <item row="13" column="0" colspan="3">
-    <widget class="QTableWidget" name="tracks">
+    <widget class="QTreeWidget" name="tracks">
      <property name="editTriggers">
       <set>QAbstractItemView::EditTrigger::NoEditTriggers</set>
      </property>
-     <property name="cornerButtonEnabled">
+     <property name="alternatingRowColors">
+      <bool>true</bool>
+     </property>
+     <property name="rootIsDecorated">
       <bool>false</bool>
      </property>
-     <attribute name="verticalHeaderVisible">
-      <bool>false</bool>
-     </attribute>
+     <property name="uniformRowHeights">
+      <bool>true</bool>
+     </property>
      <column>
       <property name="text">
        <string>#</string>
@@ -352,6 +327,19 @@
       </property>
      </column>
     </widget>
+   </item>
+   <item row="14" column="0" colspan="3">
+    <spacer name="verticalSpacer">
+     <property name="orientation">
+      <enum>Qt::Orientation::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>0</width>
+       <height>0</height>
+      </size>
+     </property>
+    </spacer>
    </item>
   </layout>
  </widget>

@@ -7,57 +7,23 @@
 
 #include "util/audio_stream.h"
 
-#include "common/log.h"
+#include "common/small_string.h"
 
 #include <array>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
-#include <vector>
 
 class SettingsInterface;
 
+namespace Log {
+enum class Level : u32;
+}
+
 enum class RenderAPI : u8;
 enum class MediaCaptureBackend : u8;
-
-struct SettingInfo
-{
-  enum class Type
-  {
-    Boolean,
-    Integer,
-    IntegerList,
-    Float,
-    String,
-    Path,
-  };
-
-  Type type;
-  const char* name;
-  const char* display_name;
-  const char* description;
-  const char* default_value;
-  const char* min_value;
-  const char* max_value;
-  const char* step_value;
-  const char* format;
-  const char* const* options;
-  float multiplier;
-
-  const char* StringDefaultValue() const;
-  bool BooleanDefaultValue() const;
-  s32 IntegerDefaultValue() const;
-  s32 IntegerMinValue() const;
-  s32 IntegerMaxValue() const;
-  s32 IntegerStepValue() const;
-  float FloatDefaultValue() const;
-  float FloatMinValue() const;
-  float FloatMaxValue() const;
-  float FloatStepValue() const;
-
-  void CopyValue(SettingsInterface* dest_si, const SettingsInterface& src_si, const char* section) const;
-};
+enum class OSDMessageType : u8;
 
 struct GPUSettings
 {
@@ -66,9 +32,7 @@ struct GPUSettings
   GPURenderer gpu_renderer = DEFAULT_GPU_RENDERER;
   u8 gpu_resolution_scale = 1;
   u8 gpu_multisamples = 1;
-  u8 gpu_max_queued_frames = DEFAULT_GPU_MAX_QUEUED_FRAMES;
 
-  ForceVideoTimingMode gpu_force_video_timing = DEFAULT_FORCE_VIDEO_TIMING_MODE;
   GPUTextureFilter gpu_texture_filter = DEFAULT_GPU_TEXTURE_FILTER;
   GPUTextureFilter gpu_sprite_texture_filter = DEFAULT_GPU_TEXTURE_FILTER;
   GPUDitheringMode gpu_dithering_mode = DEFAULT_GPU_DITHERING_MODE;
@@ -77,26 +41,28 @@ struct GPUSettings
   u8 gpu_downsample_scale = 1;
   GPUWireframeMode gpu_wireframe_mode = DEFAULT_GPU_WIREFRAME_MODE;
   DisplayDeinterlacingMode display_deinterlacing_mode = DEFAULT_DISPLAY_DEINTERLACING_MODE;
-  DisplayCropMode display_crop_mode = DEFAULT_DISPLAY_CROP_MODE;
   DisplayAspectRatio display_aspect_ratio = DEFAULT_DISPLAY_ASPECT_RATIO;
+  DisplayCropMode display_crop_mode = DEFAULT_DISPLAY_CROP_MODE;
   DisplayAlignment display_alignment = DEFAULT_DISPLAY_ALIGNMENT;
   DisplayRotation display_rotation = DEFAULT_DISPLAY_ROTATION;
   DisplayScalingMode display_scaling = DEFAULT_DISPLAY_SCALING;
+  DisplayScalingMode display_scaling_24bit = DEFAULT_DISPLAY_SCALING;
   DisplayExclusiveFullscreenControl display_exclusive_fullscreen_control = DEFAULT_DISPLAY_EXCLUSIVE_FULLSCREEN_CONTROL;
   DisplayScreenshotMode display_screenshot_mode = DEFAULT_DISPLAY_SCREENSHOT_MODE;
   DisplayScreenshotFormat display_screenshot_format = DEFAULT_DISPLAY_SCREENSHOT_FORMAT;
   u8 display_screenshot_quality = DEFAULT_DISPLAY_SCREENSHOT_QUALITY;
-  u16 display_aspect_ratio_custom_numerator = 0;
-  u16 display_aspect_ratio_custom_denominator = 0;
   s16 display_active_start_offset = 0;
   s16 display_active_end_offset = 0;
   s8 display_line_start_offset = 0;
   s8 display_line_end_offset = 0;
 
+  u8 gpu_max_queued_frames = DEFAULT_GPU_MAX_QUEUED_FRAMES;
   bool gpu_use_thread : 1 = true;
   bool gpu_use_software_renderer_for_readbacks : 1 = false;
+  bool gpu_use_software_renderer_for_memory_states : 1 = false;
   bool gpu_use_debug_device : 1 = false;
   bool gpu_use_debug_device_gpu_validation : 1 = false;
+  bool gpu_prefer_gles_context : 1 = DEFAULT_GPU_PREFER_GLES_CONTEXT;
   bool gpu_disable_shader_cache : 1 = false;
   bool gpu_disable_dual_source_blend : 1 = false;
   bool gpu_disable_framebuffer_fetch : 1 = false;
@@ -110,6 +76,7 @@ struct GPUSettings
   bool gpu_per_sample_shading : 1 = false;
   bool gpu_scaled_interlacing : 1 = true;
   bool gpu_force_round_texcoords : 1 = false;
+  bool gpu_widescreen_rendering : 1 = false;
   bool gpu_widescreen_hack : 1 = false;
   bool gpu_texture_cache : 1 = false;
   bool gpu_show_vram : 1 = false;
@@ -148,11 +115,14 @@ struct GPUSettings
   bool display_show_inputs : 1 = false;
   bool display_show_enhancements : 1 = false;
   bool display_auto_resize_window : 1 = false;
-  float display_pre_frame_sleep_buffer = DEFAULT_DISPLAY_PRE_FRAME_SLEEP_BUFFER;
-  float display_osd_scale = DEFAULT_OSD_SCALE;
-  float display_osd_margin = 0.0f;
+
   float gpu_pgxp_tolerance = -1.0f;
   float gpu_pgxp_depth_clear_threshold = 0.0f;
+
+  float display_osd_scale = DEFAULT_OSD_SCALE;
+  float display_osd_margin = 0.0f;
+
+  std::array<float, 5> display_osd_message_duration = DEFAULT_DISPLAY_OSD_MESSAGE_DURATIONS;
 
   // texture replacements
   struct TextureReplacementSettings
@@ -164,15 +134,6 @@ struct GPUSettings
       static constexpr u32 DEFAULT_MAX_REPLACEMENT_CACHE_VRAM_USAGE_MB = 512;
 
       constexpr Configuration() = default;
-
-      bool dump_texture_pages : 1 = false;
-      bool dump_full_texture_pages : 1 = false;
-      bool dump_texture_force_alpha_channel : 1 = false;
-      bool dump_vram_write_force_alpha_channel : 1 = true;
-      bool dump_c16_textures : 1 = false;
-      bool reduce_palette_range : 1 = true;
-      bool convert_copies_to_writes : 1 = false;
-      bool replacement_scale_linear_filter : 1 = false;
 
       u32 max_hash_cache_entries = DEFAULT_MAX_HASH_CACHE_ENTRIES;
       u32 max_hash_cache_vram_usage_mb = DEFAULT_MAX_HASH_CACHE_VRAM_USAGE_MB;
@@ -186,6 +147,15 @@ struct GPUSettings
 
       u16 vram_write_dump_width_threshold = 128;
       u16 vram_write_dump_height_threshold = 128;
+
+      bool dump_texture_pages : 1 = false;
+      bool dump_full_texture_pages : 1 = false;
+      bool dump_texture_force_alpha_channel : 1 = false;
+      bool dump_vram_write_force_alpha_channel : 1 = true;
+      bool dump_c16_textures : 1 = false;
+      bool reduce_palette_range : 1 = true;
+      bool convert_copies_to_writes : 1 = false;
+      bool replacement_scale_linear_filter : 1 = false;
 
       bool operator==(const Configuration& rhs) const;
       bool operator!=(const Configuration& rhs) const;
@@ -210,7 +180,6 @@ struct GPUSettings
 
   std::string overlay_image_path;
 
-  float GetDisplayAspectRatioValue() const;
   float GetPGXPDepthClearThreshold() const;
   void SetPGXPDepthClearThreshold(float value);
 
@@ -227,10 +196,10 @@ struct GPUSettings
     return (gpu_dithering_mode == GPUDitheringMode::Scaled ||
             gpu_dithering_mode == GPUDitheringMode::ScaledShaderBlend);
   }
-  ALWAYS_INLINE bool IsUsingIntegerDisplayScaling() const
+  ALWAYS_INLINE bool IsUsingIntegerDisplayScaling(bool is_24bit) const
   {
-    return (display_scaling == DisplayScalingMode::NearestInteger ||
-            display_scaling == DisplayScalingMode::BilinearInteger);
+    const DisplayScalingMode mode = is_24bit ? display_scaling_24bit : display_scaling;
+    return (mode == DisplayScalingMode::NearestInteger || mode == DisplayScalingMode::BilinearInteger);
   }
 
   ALWAYS_INLINE bool UsingPGXPCPUMode() const { return gpu_pgxp_enable && gpu_pgxp_cpu; }
@@ -248,11 +217,10 @@ struct GPUSettings
 
   static constexpr DisplayDeinterlacingMode DEFAULT_DISPLAY_DEINTERLACING_MODE = DisplayDeinterlacingMode::Progressive;
   static constexpr DisplayCropMode DEFAULT_DISPLAY_CROP_MODE = DisplayCropMode::Overscan;
-  static constexpr DisplayAspectRatio DEFAULT_DISPLAY_ASPECT_RATIO = DisplayAspectRatio::Auto;
+  static constexpr DisplayAspectRatio DEFAULT_DISPLAY_ASPECT_RATIO = DisplayAspectRatio::Auto();
   static constexpr DisplayAlignment DEFAULT_DISPLAY_ALIGNMENT = DisplayAlignment::Center;
   static constexpr DisplayRotation DEFAULT_DISPLAY_ROTATION = DisplayRotation::Normal;
   static constexpr DisplayScalingMode DEFAULT_DISPLAY_SCALING = DisplayScalingMode::BilinearSmooth;
-  static constexpr ForceVideoTimingMode DEFAULT_FORCE_VIDEO_TIMING_MODE = ForceVideoTimingMode::Disabled;
   static constexpr DisplayExclusiveFullscreenControl DEFAULT_DISPLAY_EXCLUSIVE_FULLSCREEN_CONTROL =
     DisplayExclusiveFullscreenControl::Automatic;
   static constexpr DisplayScreenshotMode DEFAULT_DISPLAY_SCREENSHOT_MODE = DisplayScreenshotMode::ScreenResolution;
@@ -261,10 +229,14 @@ struct GPUSettings
   static constexpr float DEFAULT_DISPLAY_PRE_FRAME_SLEEP_BUFFER = 2.0f;
   static constexpr float DEFAULT_OSD_SCALE = 100.0f;
 
+  static const std::array<float, 5> DEFAULT_DISPLAY_OSD_MESSAGE_DURATIONS;
+
 #ifndef __ANDROID__
   static constexpr u8 DEFAULT_GPU_MAX_QUEUED_FRAMES = 2;
+  static constexpr bool DEFAULT_GPU_PREFER_GLES_CONTEXT = false;
 #else
   static constexpr u8 DEFAULT_GPU_MAX_QUEUED_FRAMES = 3;
+  static constexpr bool DEFAULT_GPU_PREFER_GLES_CONTEXT = true;
 #endif
 };
 
@@ -281,6 +253,7 @@ struct Settings : public GPUSettings
   TickCount gpu_max_run_ahead = DEFAULT_GPU_MAX_RUN_AHEAD;
 
   ConsoleRegion region = DEFAULT_CONSOLE_REGION;
+  ForceVideoTimingMode gpu_force_video_timing = DEFAULT_FORCE_VIDEO_TIMING_MODE;
 
   CPUExecutionMode cpu_execution_mode = DEFAULT_CPU_EXECUTION_MODE;
   CPUFastmemMode cpu_fastmem_mode = DEFAULT_CPU_FASTMEM_MODE;
@@ -289,6 +262,58 @@ struct Settings : public GPUSettings
   bool cpu_recompiler_memory_exceptions : 1 = false;
   bool cpu_recompiler_block_linking : 1 = true;
   bool cpu_recompiler_icache : 1 = false;
+  bool cpu_enable_8mb_ram : 1 = false;
+
+  bool mdec_use_old_routines : 1 = false;
+  bool mdec_disable_cdrom_speedup : 1 = false;
+
+  bool pcdrv_enable : 1 = false;
+  bool pcdrv_enable_writes : 1 = false;
+
+  bool pio_switch_active : 1 = true;
+  bool pio_flash_write_enable : 1 = false;
+
+  bool sio_redirect_to_tty : 1 = false;
+
+  bool memory_card_use_playlist_title : 1 = true;
+  bool memory_card_fast_forward_access : 1 = false;
+
+  bool cdrom_region_check : 1 = false;
+  bool cdrom_subq_skew : 1 = false;
+  bool cdrom_load_image_to_ram : 1 = false;
+  bool cdrom_load_image_patches : 1 = false;
+  bool cdrom_ignore_host_subcode : 1 = false;
+  bool cdrom_mute_cd_audio : 1 = false;
+  bool cdrom_auto_disc_change : 1 = false;
+
+  bool bios_tty_logging : 1 = false;
+  bool bios_patch_fast_boot : 1 = DEFAULT_FAST_BOOT_VALUE;
+  bool bios_fast_forward_boot : 1 = false;
+
+  bool rewind_enable : 1 = false;
+  bool runahead_for_analog_input : 1 = false;
+
+  bool apply_compatibility_settings : 1 = true;
+  bool apply_game_settings : 1 = true;
+  bool load_devices_from_save_states : 1 = false;
+
+  u16 rewind_save_slots = 10;
+  u8 runahead_frames = 0;
+
+  SaveStateCompressionMode save_state_compression = DEFAULT_SAVE_STATE_COMPRESSION_MODE;
+
+  u8 cdrom_readahead_sectors = DEFAULT_CDROM_READAHEAD_SECTORS;
+  CDROMMechaconVersion cdrom_mechacon_version = DEFAULT_CDROM_MECHACON_VERSION;
+
+  u8 cdrom_read_speedup = 1;
+  u8 cdrom_seek_speedup = 1;
+  u32 cdrom_max_seek_speedup_cycles = DEFAULT_CDROM_MAX_SEEK_SPEEDUP_CYCLES;
+  u32 cdrom_max_read_speedup_cycles = DEFAULT_CDROM_MAX_READ_SPEEDUP_CYCLES;
+
+  u8 audio_output_volume = 100;
+  u8 audio_fast_forward_volume = 100;
+
+  bool audio_output_muted : 1 = false;
 
   bool sync_to_host_refresh_rate : 1 = false;
   bool inhibit_screensaver : 1 = true;
@@ -297,54 +322,9 @@ struct Settings : public GPUSettings
   bool save_state_on_exit : 1 = true;
   bool create_save_state_backups : 1 = DEFAULT_SAVE_STATE_BACKUPS;
   bool confim_power_off : 1 = true;
-  bool load_devices_from_save_states : 1 = false;
-  bool apply_compatibility_settings : 1 = true;
-  bool apply_game_settings : 1 = true;
   bool disable_all_enhancements : 1 = false;
   bool enable_discord_presence : 1 = false;
-
-  bool rewind_enable : 1 = false;
-
-  bool cdrom_region_check : 1 = false;
-  bool cdrom_subq_skew : 1 = false;
-  bool cdrom_load_image_to_ram : 1 = false;
-  bool cdrom_load_image_patches : 1 = false;
-  bool cdrom_mute_cd_audio : 1 = false;
-  bool cdrom_auto_disc_change : 1 = false;
-
-  u16 rewind_save_slots = 10;
-  u8 runahead_frames = 0;
-
-  SaveStateCompressionMode save_state_compression = DEFAULT_SAVE_STATE_COMPRESSION_MODE;
-
-  u8 cdrom_read_speedup = 1;
-  u8 cdrom_seek_speedup = 1;
-  u32 cdrom_max_seek_speedup_cycles = DEFAULT_CDROM_MAX_SEEK_SPEEDUP_CYCLES;
-  u32 cdrom_max_read_speedup_cycles = DEFAULT_CDROM_MAX_READ_SPEEDUP_CYCLES;
-
-  u8 cdrom_readahead_sectors = DEFAULT_CDROM_READAHEAD_SECTORS;
-  CDROMMechaconVersion cdrom_mechacon_version = DEFAULT_CDROM_MECHACON_VERSION;
-
-  u8 audio_output_volume = 100;
-  u8 audio_fast_forward_volume = 100;
-
-  bool audio_output_muted : 1 = false;
-
-  bool use_old_mdec_routines : 1 = false;
-  bool mdec_disable_cdrom_speedup : 1 = false;
-  bool pcdrv_enable : 1 = false;
   bool export_shared_memory : 1 = false;
-
-  bool bios_tty_logging : 1 = false;
-  bool bios_patch_fast_boot : 1 = DEFAULT_FAST_BOOT_VALUE;
-  bool bios_fast_forward_boot : 1 = false;
-  bool enable_8mb_ram : 1 = false;
-  bool memory_card_use_playlist_title : 1 = true;
-  bool memory_card_fast_forward_access : 1 = false;
-  bool pio_switch_active : 1 = true;
-  bool pio_flash_write_enable : 1 = false;
-  bool sio_redirect_to_tty : 1 = false;
-  bool pcdrv_enable_writes : 1 = false;
 
   // achievements
   bool achievements_enabled : 1 = false;
@@ -368,6 +348,8 @@ struct Settings : public GPUSettings
   float turbo_speed = 0.0f;
 
   float rewind_save_frequency = 10.0f;
+
+  float display_pre_frame_sleep_buffer = DEFAULT_DISPLAY_PRE_FRAME_SLEEP_BUFFER;
 
   std::array<ControllerType, NUM_CONTROLLER_AND_CARD_PORTS> controller_types{};
   std::array<MemoryCardType, NUM_CONTROLLER_AND_CARD_PORTS> memory_card_types{};
@@ -453,6 +435,7 @@ struct Settings : public GPUSettings
   void Save(SettingsInterface& si, bool ignore_base) const;
   static void Clear(SettingsInterface& si);
 
+  void ApplySettingRestrictions();
   void FixIncompatibleSettings(const SettingsInterface& si, bool display_osd_messages);
 
   bool AreGPUDeviceSettingsChanged(const Settings& old_settings) const;
@@ -523,9 +506,10 @@ struct Settings : public GPUSettings
   static const char* GetDisplayCropModeName(DisplayCropMode crop_mode);
   static const char* GetDisplayCropModeDisplayName(DisplayCropMode crop_mode);
 
-  static std::optional<DisplayAspectRatio> ParseDisplayAspectRatio(const char* str);
-  static const char* GetDisplayAspectRatioName(DisplayAspectRatio ar);
-  static const char* GetDisplayAspectRatioDisplayName(DisplayAspectRatio ar);
+  static std::optional<DisplayAspectRatio> ParseDisplayAspectRatio(std::string_view str);
+  static TinyString GetDisplayAspectRatioName(DisplayAspectRatio ar);
+  static TinyString GetDisplayAspectRatioDisplayName(DisplayAspectRatio ar);
+  static std::span<const DisplayAspectRatio> GetPredefinedDisplayAspectRatios();
 
   static std::optional<DisplayAlignment> ParseDisplayAlignment(const char* str);
   static const char* GetDisplayAlignmentName(DisplayAlignment alignment);
@@ -561,6 +545,8 @@ struct Settings : public GPUSettings
   static const char* GetDisplayScreenshotFormatExtension(DisplayScreenshotFormat mode);
   static std::optional<DisplayScreenshotFormat> GetDisplayScreenshotFormatFromFileName(const std::string_view filename);
 
+  static const char* GetDisplayOSDMessageTypeName(OSDMessageType type);
+
   static std::optional<MemoryCardType> ParseMemoryCardTypeName(const char* str);
   static const char* GetMemoryCardTypeName(MemoryCardType type);
   static const char* GetMemoryCardTypeDisplayName(MemoryCardType type);
@@ -582,6 +568,7 @@ struct Settings : public GPUSettings
   static const char* GetPIODeviceTypeModeDisplayName(PIODeviceType type);
 
   static constexpr ConsoleRegion DEFAULT_CONSOLE_REGION = ConsoleRegion::Auto;
+  static constexpr ForceVideoTimingMode DEFAULT_FORCE_VIDEO_TIMING_MODE = ForceVideoTimingMode::Disabled;
 
   // Prefer recompiler when supported.
 #ifdef ENABLE_RECOMPILER
@@ -612,11 +599,9 @@ struct Settings : public GPUSettings
   static constexpr PIODeviceType DEFAULT_PIO_DEVICE_TYPE = PIODeviceType::None;
 
   static constexpr AchievementChallengeIndicatorMode DEFAULT_ACHIEVEMENT_CHALLENGE_INDICATOR_MODE =
-    AchievementChallengeIndicatorMode::PersistentIcon;
+    AchievementChallengeIndicatorMode::Notification;
   static constexpr u8 DEFAULT_ACHIEVEMENT_NOTIFICATION_TIME = 5;
   static constexpr u8 DEFAULT_LEADERBOARD_NOTIFICATION_TIME = 10;
-
-  static constexpr Log::Level DEFAULT_LOG_LEVEL = Log::Level::Info;
 
   static constexpr SaveStateCompressionMode DEFAULT_SAVE_STATE_COMPRESSION_MODE = SaveStateCompressionMode::ZstDefault;
 

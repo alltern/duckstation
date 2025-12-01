@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include "qtprogresscallback.h"
 #include "ui_coverdownloadwindow.h"
 
 #include "common/timer.h"
@@ -15,6 +14,10 @@
 #include <memory>
 #include <string>
 
+class Error;
+
+class QtAsyncTaskWithProgress;
+
 class CoverDownloadWindow final : public QWidget
 {
   Q_OBJECT
@@ -25,38 +28,16 @@ public:
 
 Q_SIGNALS:
   void closed();
-  void coverRefreshRequested();
 
 protected:
-  void closeEvent(QCloseEvent* ev);
-
-private Q_SLOTS:
-  void onDownloadStatus(const QString& text);
-  void onDownloadProgress(int value, int range);
-  void onDownloadComplete();
-  void onStartClicked();
-  void onCloseClicked();
-  void updateEnabled();
+  void closeEvent(QCloseEvent* ev) override;
 
 private:
-  class CoverDownloadThread : public QtAsyncProgressThread
-  {
-  public:
-    CoverDownloadThread(QWidget* parent, const QString& urls, bool use_serials);
-    ~CoverDownloadThread();
-
-  protected:
-    void runAsync() override;
-
-  private:
-    std::vector<std::string> m_urls;
-    bool m_use_serials;
-  };
-
-  void startThread();
-  void cancelThread();
+  void onStartClicked();
+  void downloadComplete(bool result, const Error& error);
+  void updateEnabled();
 
   Ui::CoverDownloadWindow m_ui;
-  std::unique_ptr<CoverDownloadThread> m_thread;
+  QtAsyncTaskWithProgress* m_task = nullptr;
   Timer m_last_refresh_time;
 };

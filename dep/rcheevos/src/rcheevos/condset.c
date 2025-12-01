@@ -101,6 +101,11 @@ static int32_t rc_classify_conditions(rc_condset_t* self, const char* memaddr, c
     chain_length = 1;
   } while (*memaddr++ == '_');
 
+  /* any combining conditions that don't actually feed into a non-combining condition
+   * need to still have space allocated for them. put them in "other" to match the
+   * logic in rc_find_next_classification */
+  self->num_other_conditions += chain_length - 1;
+
   return index;
 }
 
@@ -338,8 +343,12 @@ rc_condset_t* rc_parse_condset(const char** memaddr, rc_parse_state_t* parse) {
     if (parse->buffer) {
       classification = rc_classify_condition(&condition);
       if (classification == RC_CONDITION_CLASSIFICATION_COMBINING) {
-        if (combining_classification == RC_CONDITION_CLASSIFICATION_COMBINING)
-          combining_classification = rc_find_next_classification(&(*memaddr)[1]); /* skip over '_' */
+        if (combining_classification == RC_CONDITION_CLASSIFICATION_COMBINING) {
+          if (**memaddr == '_')
+            combining_classification = rc_find_next_classification(&(*memaddr)[1]); /* skip over '_' */
+          else
+            combining_classification = RC_CONDITION_CLASSIFICATION_OTHER;
+        }
 
         classification = combining_classification;
       }
@@ -598,8 +607,8 @@ static void rc_condset_evaluate_or_next(rc_condition_t* condition, rc_eval_state
   eval_state->or_next = rc_condset_evaluate_condition_no_add_hits(condition, eval_state);
 }
 
-static void rc_test_condset_internal(rc_condition_t* condition, uint32_t num_conditions,
-                                     rc_eval_state_t* eval_state, int can_short_circuit) {
+void rc_test_condset_internal(rc_condition_t* condition, uint32_t num_conditions,
+                              rc_eval_state_t* eval_state, int can_short_circuit) {
   const rc_condition_t* condition_end = condition + num_conditions;
   for (; condition < condition_end; ++condition) {
     switch (condition->type) {

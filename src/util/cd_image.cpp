@@ -120,13 +120,26 @@ std::unique_ptr<CDImage> CDImage::Open(const char* path, bool allow_patches, Err
 #endif
     if (FileSystem::FileExists(ppf_path.c_str()))
     {
-      image = CDImage::OverlayPPFPatch(ppf_path.c_str(), std::move(image));
+      image = CDImage::OverlayPPFPatch(ppf_path.c_str(), std::move(image), error);
       if (!image)
-        Error::SetStringFmt(error, "Failed to apply ppf patch from '{}'.", ppf_path);
+        Error::AddPrefixFmt(error, "Failed to apply ppf patch from '{}':\n", ppf_path);
     }
   }
 
   return image;
+}
+
+bool CDImage::HasOverlayablePatch(const char* path)
+{
+  // Annoying handling because of storage access framework.
+#ifdef __ANDROID__
+  const std::string ppf_path =
+    Path::BuildRelativePath(path, Path::ReplaceExtension(FileSystem::GetDisplayNameFromPath(path), "ppf"));
+#else
+  const std::string ppf_path = Path::BuildRelativePath(path, Path::ReplaceExtension(Path::GetFileName(path), "ppf"));
+#endif
+
+  return FileSystem::FileExists(ppf_path.c_str());
 }
 
 CDImage::LBA CDImage::GetTrackStartPosition(u8 track) const
@@ -304,18 +317,6 @@ bool CDImage::HasSubchannelData() const
   return false;
 }
 
-std::string CDImage::GetMetadata(std::string_view type) const
-{
-  std::string result;
-  if (type == "title")
-  {
-    const std::string display_name(FileSystem::GetDisplayNameFromPath(m_filename));
-    result = Path::StripExtension(display_name);
-  }
-
-  return result;
-}
-
 bool CDImage::HasSubImages() const
 {
   return false;
@@ -336,12 +337,12 @@ bool CDImage::SwitchSubImage(u32 index, Error* error)
   return false;
 }
 
-std::string CDImage::GetSubImageMetadata(u32 index, std::string_view type) const
+std::string CDImage::GetSubImageTitle(u32 index) const
 {
   return {};
 }
 
-CDImage::PrecacheResult CDImage::Precache(ProgressCallback* progress /*= ProgressCallback::NullProgressCallback*/)
+CDImage::PrecacheResult CDImage::Precache(ProgressCallback* progress, Error* error)
 {
   return PrecacheResult::Unsupported;
 }

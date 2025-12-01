@@ -3,51 +3,85 @@
 
 #include "qthost.h"
 
-#include "util/imgui_fullscreen.h"
+#include "core/fullscreenui_widgets.h"
 
 #include "common/path.h"
 
 #include <QtCore/QFile>
 #include <QtGui/QPalette>
+#include <QtGui/QStyleHints>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QStyleFactory>
 
 namespace QtHost {
+static void SetThemeAttributes(bool is_stylesheet_theme, bool is_variable_color_theme, bool is_dark_theme);
+static bool NativeThemeStylesheetNeedsUpdate();
 static void SetStyleFromSettings();
-} // namespace QtHost
+static QString GetNativeThemeStylesheet();
 
-static QString s_unthemed_style_name;
-static QPalette s_unthemed_palette;
-static bool s_unthemed_style_name_set;
+namespace {
+struct State
+{
+  QString unthemed_style_name;
+  QPalette unthemed_palette;
+  bool is_stylesheet_theme = false;
+  bool is_variable_color_theme = false;
+  bool is_dark_theme = false;
+  bool unthemed_style_name_set = false;
+};
+} // namespace
+
+static State s_state;
+
+} // namespace QtHost
 
 const char* QtHost::GetDefaultThemeName()
 {
-  return "darkfusion";
+#ifndef __APPLE__
+  return "darkerfusion";
+#else
+  return "";
+#endif
 }
 
 void QtHost::UpdateApplicationTheme()
 {
-  if (!s_unthemed_style_name_set)
+  if (!s_state.unthemed_style_name_set)
   {
-    s_unthemed_style_name_set = true;
-    s_unthemed_style_name = QApplication::style()->objectName();
-    s_unthemed_palette = QApplication::palette();
+    s_state.unthemed_style_name_set = true;
+    s_state.unthemed_style_name = QApplication::style()->objectName();
+    s_state.unthemed_palette = QApplication::palette();
   }
 
   SetStyleFromSettings();
-  SetIconThemeFromStyle();
+  UpdateThemeOnStyleChange();
+}
+
+void QtHost::SetThemeAttributes(bool is_stylesheet_theme, bool is_variable_color_theme, bool is_dark_theme)
+{
+  s_state.is_stylesheet_theme = is_stylesheet_theme;
+  s_state.is_variable_color_theme = is_variable_color_theme;
+  s_state.is_dark_theme = is_dark_theme;
+
+  if (is_variable_color_theme)
+    qApp->styleHints()->unsetColorScheme();
+  else
+    qApp->styleHints()->setColorScheme(is_dark_theme ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light);
 }
 
 void QtHost::SetStyleFromSettings()
 {
   const TinyString theme = Host::GetBaseTinyStringSettingValue("UI", "Theme", QtHost::GetDefaultThemeName());
 
+  // Clear any existing stylesheet before applying new.
+  qApp->setStyleSheet(QString());
+
   if (theme == "qdarkstyle")
   {
-    qApp->setStyle(s_unthemed_style_name);
-    qApp->setPalette(s_unthemed_palette);
-    qApp->setStyleSheet(QString());
+    SetThemeAttributes(true, false, true);
+    qApp->setStyle(s_state.unthemed_style_name);
+    qApp->setPalette(s_state.unthemed_palette);
 
     QFile f(QStringLiteral(":qdarkstyle/style.qss"));
     if (f.open(QFile::ReadOnly | QFile::Text))
@@ -55,20 +89,21 @@ void QtHost::SetStyleFromSettings()
   }
   else if (theme == "fusion")
   {
+    SetThemeAttributes(false, true, false);
     qApp->setStyle(QStyleFactory::create("Fusion"));
-    qApp->setPalette(s_unthemed_palette);
-    qApp->setStyleSheet(QString());
+    qApp->setPalette(s_state.unthemed_palette);
   }
   else if (theme == "darkfusion")
   {
     // adapted from https://gist.github.com/QuantumCD/6245215
+    SetThemeAttributes(false, false, true);
     qApp->setStyle(QStyleFactory::create("Fusion"));
 
-    const QColor lighterGray(75, 75, 75);
-    const QColor darkGray(53, 53, 53);
-    const QColor gray(128, 128, 128);
-    const QColor black(25, 25, 25);
-    const QColor blue(198, 238, 255);
+    static constexpr QColor lighterGray(75, 75, 75);
+    static constexpr QColor darkGray(53, 53, 53);
+    static constexpr QColor gray(128, 128, 128);
+    static constexpr QColor black(25, 25, 25);
+    static constexpr QColor blue(198, 238, 255);
 
     QPalette darkPalette;
     darkPalette.setColor(QPalette::Window, darkGray);
@@ -92,19 +127,19 @@ void QtHost::SetStyleFromSettings()
     darkPalette.setColor(QPalette::Disabled, QPalette::Light, darkGray);
 
     qApp->setPalette(darkPalette);
-    qApp->setStyleSheet(QString());
   }
   else if (theme == "darkfusionblue")
   {
     // adapted from https://gist.github.com/QuantumCD/6245215
+    SetThemeAttributes(false, false, true);
     qApp->setStyle(QStyleFactory::create("Fusion"));
 
-    // const QColor lighterGray(75, 75, 75);
-    const QColor darkGray(53, 53, 53);
-    const QColor gray(128, 128, 128);
-    const QColor black(25, 25, 25);
-    const QColor blue(198, 238, 255);
-    const QColor blue2(0, 88, 208);
+    // static constexpr QColor lighterGray(75, 75, 75);
+    static constexpr QColor darkGray(53, 53, 53);
+    static constexpr QColor gray(128, 128, 128);
+    static constexpr QColor black(25, 25, 25);
+    static constexpr QColor blue(198, 238, 255);
+    static constexpr QColor blue2(0, 88, 208);
 
     QPalette darkPalette;
     darkPalette.setColor(QPalette::Window, darkGray);
@@ -128,21 +163,442 @@ void QtHost::SetStyleFromSettings()
     darkPalette.setColor(QPalette::Disabled, QPalette::Light, darkGray);
 
     qApp->setPalette(darkPalette);
-    qApp->setStyleSheet(QString());
+  }
+  else if (theme == "darkerfusion")
+  {
+    SetThemeAttributes(true, false, true);
+    qApp->setStyle(QStyleFactory::create("Fusion"));
+
+    static constexpr QColor window_color(36, 36, 36);
+    static constexpr QColor base_color(43, 43, 43);
+    static constexpr QColor button_color(40, 40, 40); // qt makes this lighter
+    static constexpr QColor text(255, 255, 255);
+    static constexpr QColor highlight_background(65, 65, 65);
+    static constexpr QColor highlight_text(255, 255, 255);
+    static constexpr QColor disabled_text(200, 200, 200);
+    static constexpr QColor placeholder_text(200, 200, 200);
+    static constexpr QColor link_text(198, 238, 255);
+
+    QPalette darkPalette;
+    darkPalette.setColor(QPalette::Window, window_color);
+    darkPalette.setColor(QPalette::WindowText, text);
+    darkPalette.setColor(QPalette::Base, base_color);
+    darkPalette.setColor(QPalette::AlternateBase, window_color);
+    darkPalette.setColor(QPalette::ToolTipBase, window_color);
+    darkPalette.setColor(QPalette::ToolTipText, text);
+    darkPalette.setColor(QPalette::Text, text);
+    darkPalette.setColor(QPalette::Button, button_color);
+    darkPalette.setColor(QPalette::ButtonText, text);
+    darkPalette.setColor(QPalette::Link, link_text);
+    darkPalette.setColor(QPalette::Highlight, highlight_background);
+    darkPalette.setColor(QPalette::HighlightedText, highlight_text);
+    darkPalette.setColor(QPalette::PlaceholderText, placeholder_text);
+
+    darkPalette.setColor(QPalette::Active, QPalette::Button, button_color);
+    darkPalette.setColor(QPalette::Disabled, QPalette::ButtonText, disabled_text);
+    darkPalette.setColor(QPalette::Disabled, QPalette::WindowText, disabled_text);
+    darkPalette.setColor(QPalette::Disabled, QPalette::Text, disabled_text);
+    darkPalette.setColor(QPalette::Disabled, QPalette::Light, window_color);
+
+    qApp->setPalette(darkPalette);
+
+    // menus are by far the ugliest part of fusion, so we style them manually
+    const QString stylesheet = QStringLiteral(R"(
+QMenu {
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 6px 10px;
+  background-color: #232323;
+}
+
+QMenu::icon,
+QMenu::indicator {
+  left: 8px;
+}
+QMenu::item {
+  padding: 6px 18px;
+  border-radius: 8px;
+}
+QMenu::item:selected {
+  background-color: #414141;
+}
+QMenu::icon:checked {
+  background: #414141;
+  border: 1px solid #777;
+  border-radius: 4px;
+}
+
+QMenuBar::item {
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+QMenuBar::item:selected, QMenuBar::item:pressed {
+  background: #303030;
+  border-radius: 4px;
+}
+
+QToolTip {
+  color: #ffffff;
+  background-color: #232323;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+QToolBar {
+  border: none;
+}
+QToolButton {
+  border: none;
+  background: transparent;
+  padding: 3px;
+  border-radius: 8px;
+}
+QToolButton:checked {
+  background-color: #303030;
+}
+QToolButton:hover {
+  background-color: #414141;
+}
+QToolButton:pressed {
+  background-color: #515151;
+}
+
+QPushButton {
+  border: none;
+  background-color: #303030;
+  padding: 5px 10px;
+  border-radius: 8px;
+  color: #ffffff;
+}
+QPushButton:checked {
+  background-color: #414141;
+}
+QPushButton:hover {
+  background-color: #484848;
+}
+QPushButton:pressed {
+  background-color: #515151;
+}
+QPushButton:disabled {
+  background-color: #2d2d2d;
+  color: #777777;
+}
+QDialog QPushButton {
+  min-width: 50px;
+  padding: 6px 12px;
+}
+
+QLineEdit {
+  border: none;
+  border-radius: 8px;
+  padding: 4px 8px;
+  background-color: #2d2d2d;
+  selection-background-color: #414141;
+  selection-color: #ffffff;
+  color: #ffffff;
+}
+QLineEdit::hover {
+  background-color: #3a3a3a;
+}
+QLineEdit:disabled {
+  background-color: #1e1e1e;
+  color: #777777;
+}
+
+QCheckBox {
+  spacing: 4px;
+  padding: 2px 0;
+}
+
+QCheckBox::indicator {
+  width: 14px;
+  height: 14px;
+}
+QCheckBox::indicator::unchecked {
+  image: url(":/icons/white/svg/checkbox-unchecked.svg");
+}
+QCheckBox::indicator::unchecked:pressed {
+  image: url(":/icons/white/svg/checkbox-unchecked-pressed.svg");
+}
+QCheckBox::indicator::unchecked:disabled {
+  image: url(":/icons/white/svg/checkbox-unchecked-disabled.svg");
+}
+QCheckBox::indicator::checked {
+  image: url(":/icons/white/svg/checkbox-checked.svg");
+}
+QCheckBox::indicator::checked:pressed {
+  image: url(":/icons/white/svg/checkbox-checked-pressed.svg");
+}
+QCheckBox::indicator::checked:disabled {
+  image: url(":/icons/white/svg/checkbox-checked-disabled.svg");
+}
+QCheckBox::indicator::indeterminate {
+  image: url(":/icons/white/svg/checkbox-indeterminate.svg");
+}
+QCheckBox::indicator::indeterminate:pressed {
+  image: url(":/icons/white/svg/checkbox-indeterminate-pressed.svg");
+}
+QCheckBox::indicator::indeterminate:disabled {
+  image: url(":/icons/white/svg/checkbox-indeterminate-disabled.svg");
+}
+
+QAbstractSpinBox {
+  border: none;
+  border-radius: 8px;
+  padding: 3px 8px;
+  background-color: #2d2d2d;
+  selection-background-color: #414141;
+  selection-color: #ffffff;
+  color: #ffffff;
+}
+QAbstractSpinBox::hover {
+  background-color: #3a3a3a;
+}
+QAbstractSpinBox:disabled {
+  background-color: #1e1e1e;
+  color: #777777;
+}
+QAbstractSpinBox::up-button,
+QAbstractSpinBox::down-button {
+  subcontrol-origin: border;
+  width: 8px;
+  border: none;
+  padding: 0 8px;
+}
+QAbstractSpinBox::up-button {
+  subcontrol-position: top right; /* position at the top right corner */
+}
+QAbstractSpinBox::up-arrow {
+  width: 8px;
+  height: 8px;
+  image: url(":/qdarkstyle/arrow_up.png");
+}
+QAbstractSpinBox::up-arrow:disabled {
+  image: url(":/qdarkstyle/arrow_up_disabled.png");
+}
+QAbstractSpinBox::down-button {
+  subcontrol-position: bottom right; /* position at the top right corner */
+}
+QAbstractSpinBox::down-arrow {
+  width: 8px;
+  height: 8px;
+  image: url(":/qdarkstyle/arrow_down.png");
+}
+QAbstractSpinBox::down-arrow:disabled {
+  image: url(":/qdarkstyle/arrow_down_disabled.png");
+}
+
+QComboBox {
+  border: none;
+  border-radius: 8px;
+  padding: 4px 10px 4px 8px; /* leave space for drop-down */
+  background-color: #2d2d2d;
+  color: #ffffff;
+  selection-background-color: #414141;
+  selection-color: #ffffff;
+}
+QComboBox:hover {
+  background-color: #3a3a3a;
+}
+QComboBox:disabled {
+  background-color: #1e1e1e;
+  color: #777777;
+}
+QComboBox::drop-down {
+  subcontrol-origin: padding;
+  subcontrol-position: top right;
+  width: 16px;
+  border: none;
+  padding: 0 6px;
+  background: transparent;
+}
+QComboBox::down-arrow {
+  width: 10px;
+  height: 10px;
+  image: url(":/qdarkstyle/arrow_down.png");
+}
+QComboBox::down-arrow:disabled {
+  image: url(":/qdarkstyle/arrow_down_disabled.png");
+}
+QScrollBar {
+  background: #2d2d2d;
+  width: 12px;
+  margin: 0px;
+  border-radius: 6px;
+}
+QScrollBar::handle {
+  background-color: #414141;
+  min-height: 20px;
+  border-radius: 6px;
+}
+QScrollBar::handle:hover {
+  background: #515151;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+  height: 0;
+}
+QHeaderView {
+  background-color: #2d2d2d;
+}
+QHeaderView::section {
+  background-color: #303030;
+  padding: 2px 4px;
+  color: #ffffff;
+  border: none;
+}
+QHeaderView::section:middle,
+QHeaderView::section:last {
+  border-left: 1px solid #3d3d3d;
+}
+QHeaderView::section:hover {
+  background-color: #414141;
+}
+QHeaderView::section:pressed {
+  background-color: #515151;
+}
+QTabBar::tab {
+  background: #303030;
+  padding: 6px 12px;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  border-right: 1px solid transparent;
+  color: #ffffff;
+}
+QTabBar::tab:selected {
+  background: #414141;
+}
+QTabBar::tab:hover {
+  background: #3a3a3a;
+}
+
+QProgressBar {
+  border: none;
+  border-radius: 8px;
+  background-color: #2d2d2d;
+  color: #ffffff;
+  text-align: center;
+}
+QProgressBar::chunk {
+  background-color: #1464a0;
+  border-radius: 8px;
+}
+
+QSlider {
+  margin: 2px 0; /* to make room for the handle */
+}
+QSlider::groove {
+  border: none;
+  height: 8px;
+  background-color: #2d2d2d;
+  border-radius: 4px;
+}
+QSlider::handle {
+  background-color: #808080;
+  border: none;
+  width: 16px;
+  margin: -4px 0; /* handle is placed by default on the groove, so we need to offset it */
+  border-radius: 8px;
+}
+QSlider::handle:hover {
+  background-color: #909090;
+}
+QSlider::handle:pressed {
+  background-color: #a0a0a0;
+}
+
+QTextBrowser {
+  border: none;
+  border-radius: 8px;
+  padding: 2px 4px;
+  background-color: #2d2d2d;
+  selection-background-color: #414141;
+  selection-color: #ffffff;
+  color: #ffffff;
+}
+
+.settings-window QListView {
+  border: none;
+  border-radius: 8px;
+  background-color: #2d2d2d;
+  color: #ffffff;
+  selection-background-color: #414141;
+  selection-color: #ffffff;
+  padding: 4px;
+}
+.settings-window QListView::item {
+  border: none;
+  padding: 2px 4px;
+  border-radius: 8px;
+}
+.settings-window QListView::item:hover {
+  background-color: #3a3a3a;
+}
+.settings-window QListView::item:selected {
+  background-color: #414141;
+  color: #ffffff;
+}
+/* Remove dotted focus rectangle / outline around QListView items when focused/selected */
+.settings-window QListView:focus,
+.settings-window QListView::item:focus,
+.settings-window QListView::item:selected:focus {
+  outline: none;
+  border: none;
+}
+
+.settings-window QTreeView {
+  border: none;
+  border-radius: 8px;
+  background-color: #2d2d2d;
+  color: #ffffff;
+  selection-background-color: #414141;
+  selection-color: #ffffff;
+  padding: 4px;
+}
+.settings-window QTreeView::item {
+  border: none;
+  padding: 2px 4px;
+}
+.settings-window QTreeView::item:hover {
+  background-color: #3a3a3a;
+}
+.settings-window QTreeView::item:selected {
+  background-color: #414141;
+  color: #ffffff;
+}
+
+.settings-window GamePatchSettingsWidget QScrollArea,
+.settings-window GamePatchSettingsWidget #patches_container {
+  border: none;
+  border-radius: 8px;
+  background: #2d2d2d;
+}
+.settings-window GamePatchSettingsWidget #patches_container > QFrame {
+  border: none;
+  border-bottom: 1px solid #414141;
+  margin: 0px 8px;
+}
+    )");
+
+    qApp->setStyleSheet(stylesheet);
   }
   else if (theme == "cobaltsky")
   {
     // Custom palette by KamFretoZ, A soothing deep royal blue
     // that are meant to be easy on the eyes as the main color.
     // Alternative dark theme.
+    SetThemeAttributes(false, false, true);
     qApp->setStyle(QStyleFactory::create("Fusion"));
 
-    const QColor gray(150, 150, 150);
-    const QColor royalBlue(29, 41, 81);
-    const QColor darkishBlue(17, 30, 108);
-    const QColor lighterBlue(25, 32, 130);
-    const QColor highlight(36, 93, 218);
-    const QColor link(0, 202, 255);
+    static constexpr QColor gray(150, 150, 150);
+    static constexpr QColor royalBlue(29, 41, 81);
+    static constexpr QColor darkishBlue(17, 30, 108);
+    static constexpr QColor lighterBlue(25, 32, 130);
+    static constexpr QColor highlight(36, 93, 218);
+    static constexpr QColor link(0, 202, 255);
 
     QPalette darkPalette;
     darkPalette.setColor(QPalette::Window, royalBlue);
@@ -165,16 +621,16 @@ void QtHost::SetStyleFromSettings()
     darkPalette.setColor(QPalette::Disabled, QPalette::Light, gray);
 
     qApp->setPalette(darkPalette);
-    qApp->setStyleSheet(QString());
   }
   else if (theme == "greymatter")
   {
+    SetThemeAttributes(false, false, true);
     qApp->setStyle(QStyleFactory::create("Fusion"));
 
-    const QColor darkGray(46, 52, 64);
-    const QColor lighterGray(59, 66, 82);
-    const QColor gray(111, 111, 111);
-    const QColor blue(198, 238, 255);
+    static constexpr QColor darkGray(46, 52, 64);
+    static constexpr QColor lighterGray(59, 66, 82);
+    static constexpr QColor gray(111, 111, 111);
+    static constexpr QColor blue(198, 238, 255);
 
     QPalette darkPalette;
     darkPalette.setColor(QPalette::Window, darkGray);
@@ -198,19 +654,19 @@ void QtHost::SetStyleFromSettings()
     darkPalette.setColor(QPalette::Disabled, QPalette::Light, darkGray);
 
     qApp->setPalette(darkPalette);
-    qApp->setStyleSheet(QString());
   }
   else if (theme == "greengiant")
   {
     // Custom palette by RedDevilus, Tame (Light/Washed out) Green as main color and Grayish Blue as complimentary.
     // Alternative white theme.
+    SetThemeAttributes(false, false, false);
     qApp->setStyle(QStyleFactory::create("Fusion"));
 
-    const QColor black(25, 25, 25);
-    const QColor gray(111, 111, 111);
-    const QColor limerick(176, 196, 0);
-    const QColor brown(135, 100, 50);
-    const QColor pear(213, 222, 46);
+    static constexpr QColor black(25, 25, 25);
+    static constexpr QColor gray(111, 111, 111);
+    static constexpr QColor limerick(176, 196, 0);
+    static constexpr QColor brown(135, 100, 50);
+    static constexpr QColor pear(213, 222, 46);
 
     QPalette greenGiantPalette;
     greenGiantPalette.setColor(QPalette::Window, pear);
@@ -232,17 +688,17 @@ void QtHost::SetStyleFromSettings()
     greenGiantPalette.setColor(QPalette::Disabled, QPalette::Light, gray);
 
     qApp->setPalette(greenGiantPalette);
-    qApp->setStyleSheet(QString());
   }
   else if (theme == "pinkypals")
   {
+    SetThemeAttributes(false, false, false);
     qApp->setStyle(QStyleFactory::create("Fusion"));
 
-    const QColor black(25, 25, 25);
-    const QColor pink(255, 174, 201);
-    const QColor darkerPink(214, 145, 168);
-    const QColor brightPink(224, 88, 133);
-    const QColor congoPink(255, 127, 121);
+    static constexpr QColor black(25, 25, 25);
+    static constexpr QColor pink(255, 174, 201);
+    static constexpr QColor darkerPink(214, 145, 168);
+    static constexpr QColor brightPink(224, 88, 133);
+    static constexpr QColor congoPink(255, 127, 121);
 
     QPalette PinkyPalsPalette;
     PinkyPalsPalette.setColor(QPalette::Window, pink);
@@ -265,19 +721,19 @@ void QtHost::SetStyleFromSettings()
     PinkyPalsPalette.setColor(QPalette::Disabled, QPalette::Light, QColor(Qt::white).darker());
 
     qApp->setPalette(PinkyPalsPalette);
-    qApp->setStyleSheet(QString());
   }
   else if (theme == "AMOLED")
   {
     // Custom palette by KamFretoZ, A pure concentrated darkness
     // of a theme designed for maximum eye comfort and benefits
     // OLED screens.
+    SetThemeAttributes(false, false, true);
     qApp->setStyle(QStyleFactory::create("Fusion"));
 
-    const QColor black(0, 0, 0);
-    const QColor gray(25, 25, 25);
-    const QColor lighterGray(75, 75, 75);
-    const QColor blue(198, 238, 255);
+    static constexpr QColor black(0, 0, 0);
+    static constexpr QColor gray(25, 25, 25);
+    static constexpr QColor lighterGray(75, 75, 75);
+    static constexpr QColor blue(198, 238, 255);
 
     QPalette AMOLEDPalette;
     AMOLEDPalette.setColor(QPalette::Window, black);
@@ -301,15 +757,15 @@ void QtHost::SetStyleFromSettings()
     AMOLEDPalette.setColor(QPalette::Disabled, QPalette::Light, QColor(Qt::white).darker());
 
     qApp->setPalette(AMOLEDPalette);
-    qApp->setStyleSheet(QString());
   }
   else if (theme == "darkruby")
   {
+    SetThemeAttributes(false, false, true);
     qApp->setStyle(QStyleFactory::create("Fusion"));
 
-    const QColor gray(128, 128, 128);
-    const QColor slate(18, 18, 18);
-    const QColor rubyish(172, 21, 31);
+    static constexpr QColor gray(128, 128, 128);
+    static constexpr QColor slate(18, 18, 18);
+    static constexpr QColor rubyish(172, 21, 31);
 
     QPalette darkPalette;
     darkPalette.setColor(QPalette::Window, slate);
@@ -332,15 +788,15 @@ void QtHost::SetStyleFromSettings()
     darkPalette.setColor(QPalette::Disabled, QPalette::Light, slate.lighter());
 
     qApp->setPalette(darkPalette);
-    qApp->setStyleSheet(QString());
   }
   else if (theme == "purplerain")
   {
+    SetThemeAttributes(false, false, true);
     qApp->setStyle(QStyleFactory::create("Fusion"));
 
-    const QColor darkPurple(73, 41, 121);
-    const QColor darkerPurple(53, 29, 87);
-    const QColor gold(250, 207, 0);
+    static constexpr QColor darkPurple(73, 41, 121);
+    static constexpr QColor darkerPurple(53, 29, 87);
+    static constexpr QColor gold(250, 207, 0);
 
     QPalette darkPalette;
     darkPalette.setColor(QPalette::Window, darkPurple);
@@ -364,38 +820,64 @@ void QtHost::SetStyleFromSettings()
     darkPalette.setColor(QPalette::Disabled, QPalette::Light, darkPurple);
 
     qApp->setPalette(darkPalette);
-    qApp->setStyleSheet("QToolTip { color: #ffffff; background-color: #505a70; border: 1px solid white; }");
   }
 #ifdef _WIN32
   else if (theme == "windowsvista")
   {
+    SetThemeAttributes(false, false, false);
     qApp->setStyle(QStyleFactory::create("windowsvista"));
-    qApp->setPalette(s_unthemed_palette);
-    qApp->setStyleSheet(QString());
+    qApp->setPalette(s_state.unthemed_palette);
   }
 #endif
   else
   {
-    qApp->setStyle(s_unthemed_style_name);
-    qApp->setPalette(s_unthemed_palette);
-    qApp->setStyleSheet(QString());
+    const QString stylesheet = GetNativeThemeStylesheet();
+    SetThemeAttributes(!stylesheet.isEmpty(), true, false);
+    qApp->setStyle(s_state.unthemed_style_name);
+    qApp->setPalette(s_state.unthemed_palette);
+
+    // Cleared above.
+    if (!stylesheet.isEmpty())
+      qApp->setStyleSheet(stylesheet);
   }
 }
 
 bool QtHost::IsDarkApplicationTheme()
 {
-  QPalette palette = qApp->palette();
+  if (!s_state.is_variable_color_theme)
+    return s_state.is_dark_theme;
+
+  const Qt::ColorScheme system_color_scheme = qApp->styleHints()->colorScheme();
+  if (system_color_scheme != Qt::ColorScheme::Unknown) [[likely]]
+    return (system_color_scheme == Qt::ColorScheme::Dark);
+
+  const QPalette palette = qApp->palette();
   return (palette.windowText().color().value() > palette.window().color().value());
 }
 
-void QtHost::SetIconThemeFromStyle()
+bool QtHost::HasGlobalStylesheet()
 {
-  const bool dark = IsDarkApplicationTheme();
-  QIcon::setThemeName(dark ? QStringLiteral("white") : QStringLiteral("black"));
+  return s_state.is_stylesheet_theme;
+}
+
+void QtHost::UpdateThemeOnStyleChange()
+{
+  const QString new_theme_name = IsDarkApplicationTheme() ? QStringLiteral("white") : QStringLiteral("black");
+  if (QIcon::themeName() != new_theme_name)
+    QIcon::setThemeName(new_theme_name);
+
+  if (NativeThemeStylesheetNeedsUpdate())
+  {
+    const QString stylesheet = GetNativeThemeStylesheet();
+    if (qApp->styleSheet() != stylesheet)
+      qApp->setStyleSheet(stylesheet);
+  }
 }
 
 const char* Host::GetDefaultFullscreenUITheme()
 {
+  using namespace QtHost;
+
   const TinyString theme = Host::GetBaseTinyStringSettingValue("UI", "Theme", QtHost::GetDefaultThemeName());
 
   if (theme == "cobaltsky")
@@ -412,8 +894,144 @@ const char* Host::GetDefaultFullscreenUITheme()
     return "DarkRuby";
   else if (theme == "AMOLED")
     return "AMOLED";
-  else if (theme == "windowsvista")
-    return "Light";
-  else // if (theme == "fusion" || theme == "darkfusion" || theme == "darkfusionblue" || theme == "darkruby")
-    return "Dark";
+  else
+    return IsDarkApplicationTheme() ? "Dark" : "Light";
+}
+
+bool QtHost::NativeThemeStylesheetNeedsUpdate()
+{
+#ifdef __APPLE__
+  // See below, only used on MacOS.
+  // objectName() is empty after applying stylesheet.
+  return (s_state.is_variable_color_theme && QApplication::style()->objectName().isEmpty());
+#else
+  return false;
+#endif
+}
+
+QString QtHost::GetNativeThemeStylesheet()
+{
+  QString ret;
+#ifdef __APPLE__
+  // Qt's native style on MacOS is... not great.
+  // We re-theme the tool buttons to look like Cocoa tool buttons, and fix up popup menus.
+  ret = QStringLiteral(R"(
+QMenu {
+    border-radius: 10px;
+    padding: 4px 0;
+}
+QMenu::item {
+    padding: 4px 15px;
+    border-radius: 8px;
+    margin: 0 2px;
+}
+QMenu::icon,
+QMenu::indicator {
+    left: 8px;
+}
+QMenu::icon:checked {
+    border-radius: 4px;
+}
+QMenu::separator {
+    height: 1px;
+    margin: 4px 8px;
+}
+QToolButton {
+    border: none;
+    background: transparent;
+    padding: 5px;
+    border-radius: 10px;
+}
+.settings-window GamePatchSettingsWidget QScrollArea,
+.settings-window GamePatchSettingsWidget #patches_container {
+  border: none;
+}
+.settings-window GamePatchSettingsWidget #patches_container > QFrame {
+  border: none;
+  margin: 0px 8px;
+})");
+  if (IsDarkApplicationTheme())
+  {
+    ret += QStringLiteral(R"(
+QMenu {
+    background-color: #161616;
+    border: 1px solid #2c2c2c;
+}
+QMenu::item {
+    color: #dcdcdc;
+}
+QMenu::item:selected {
+    background-color: #2b4ab3;
+    color: #ffffff;
+}
+QMenu::item:disabled {
+    color: #585858;
+}
+QMenu::icon:checked {
+    background: #414141;
+    border: 1px solid #777;
+}
+QMenu::separator {
+    background: #3b3b3b;
+}
+QToolButton:checked {
+    background-color: #454645;
+}
+QToolButton:hover {
+    background-color: #393c3c;
+}
+QToolButton:pressed {
+    background-color: #808180;
+}
+.settings-window GamePatchSettingsWidget QScrollArea,
+.settings-window GamePatchSettingsWidget #patches_container {
+  background: #171717;
+}
+.settings-window GamePatchSettingsWidget #patches_container > QFrame {
+  border-bottom: 1px solid #414141;
+})");
+  }
+  else
+  {
+    ret += QStringLiteral(R"(
+QMenu {
+    background-color: #bdbdbd;
+    border: 1px solid #d5d5d4;
+}
+QMenu::item {
+    color: #1d1d1d;
+}
+QMenu::item:selected {
+    background-color: #2e5dc9;
+    color: #ffffff;
+}
+QMenu::icon:checked {
+    background: #414141;
+    border: 1px solid #777;
+}
+QMenu::item:disabled {
+    color: #909090;
+}
+QMenu::separator {
+    background: #a9a9a9;
+}
+QToolButton:checked {
+    background-color: #e2e2e2;
+}
+QToolButton:hover {
+    background-color: #f0f0f0;
+}
+QToolButton:pressed {
+    background-color: #8c8c8c;
+}
+.settings-window GamePatchSettingsWidget QScrollArea,
+.settings-window GamePatchSettingsWidget #patches_container {
+  background: #ffffff;
+}
+.settings-window GamePatchSettingsWidget #patches_container > QFrame {
+  border-bottom: 1px solid #414141;
+})");
+  }
+#endif
+  return ret;
 }

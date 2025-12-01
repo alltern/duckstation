@@ -6,7 +6,7 @@ on:
 
 jobs:
   build:
-    name: "Build"
+    name: "${{ matrix.arch }}"
     strategy:
       fail-fast: true
       matrix:
@@ -16,9 +16,9 @@ jobs:
     container:
       image: ghcr.io/duckstation/cross-build-${{ matrix.arch }}:latest
 
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         fetch-depth: 0
 
@@ -27,7 +27,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/deps
-        key: deps-cross ${{ matrix.arch }} ${{ hashFiles('scripts/deps/build-dependencies-linux.sh', 'scripts/deps/build-dependencies-linux-cross.sh') }}
+        key: deps-cross ${{ matrix.arch }} ${{ hashFiles('scripts/deps/build-dependencies-linux.sh', 'scripts/deps/build-dependencies-linux-cross.sh', 'scripts/deps/versions') }}
 
     - name: Build Dependencies
       if: steps.cache-deps.outputs.cache-hit != 'true'
@@ -57,34 +57,31 @@ jobs:
         echo 'set(CMAKE_MODULE_LINKER_FLAGS_INIT "-fuse-ld=lld")' >> "$HOME/toolchain.cmake"
         echo 'set(CMAKE_SHARED_LINKER_FLAGS_INIT "-fuse-ld=lld")' >> "$HOME/toolchain.cmake"
 
-    - name: Set Build Tag Asset
-      if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev'
-      run: |
-        echo '#pragma once' > src/scmversion/tag.h
-        echo '#define SCM_RELEASE_ASSET "DuckStation-${{ matrix.arch }}.AppImage"' >> src/scmversion/tag.h
-        echo '#define SCM_RELEASE_TAGS {"latest", "preview"}' >> src/scmversion/tag.h
-
     - name: Tag as Preview Release
       if: github.ref == 'refs/heads/master'
       run: |
-        echo '#define SCM_RELEASE_TAG "preview"' >> src/scmversion/tag.h
+        echo '#pragma once' > src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_CHANNEL "preview"' >> src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_IS_OFFICIAL 1' >> src/scmversion/tag.h
 
-    - name: Tag as Rolling Release
+    - name: Tag as Stable Release
       if: github.ref == 'refs/heads/dev'
       run: |
-        echo '#define SCM_RELEASE_TAG "latest"' >> src/scmversion/tag.h
+        echo '#pragma once' > src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_CHANNEL "latest"' >> src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_IS_OFFICIAL 1' >> src/scmversion/tag.h
 
     - name: Download Patch Archives
       shell: bash
       run: |
         cd data/resources
-        curl -LO "https://github.com/duckstation/chtdb/releases/download/latest/cheats.zip"
-        curl -LO "https://github.com/duckstation/chtdb/releases/download/latest/patches.zip"
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/chtdb/releases/download/latest/cheats.zip"
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/chtdb/releases/download/latest/patches.zip"
 
     - name: Generate CMake
       shell: bash
       run: |
-        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_TOOLCHAIN_FILE="$HOME/toolchain.cmake" -DLCONVERT_EXE="$HOME/deps/host/bin/lconvert" -DHOST_MIN_PAGE_SIZE=4096 -DHOST_MAX_PAGE_SIZE=16384 -DHOST_CACHE_LINE_SIZE=64 -DBUILD_QT_FRONTEND=ON -DBUILD_MINI_FRONTEND=ON
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_TOOLCHAIN_FILE="$HOME/toolchain.cmake" -DCMAKE_PREFIX_PATH="$HOME/deps/cross" -DLCONVERT_EXE="$HOME/deps/host/bin/lconvert" -DHOST_MIN_PAGE_SIZE=4096 -DHOST_MAX_PAGE_SIZE=16384 -DHOST_CACHE_LINE_SIZE=64 -DBUILD_QT_FRONTEND=ON -DBUILD_MINI_FRONTEND=ON
 
     - name: Compile Build
       shell: bash
@@ -94,7 +91,7 @@ jobs:
         scripts/packaging/appimage/make-cross-appimage.sh -inject-libc duckstation-mini ${{ matrix.arch }} "$(realpath build)" "$HOME/deps/cross" "/${{ matrix.arch }}-chroot"
 
     - name: Upload AppImages
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: "linux-${{ matrix.arch }}-appimage"
         path: "DuckStation-*.AppImage"

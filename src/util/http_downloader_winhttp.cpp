@@ -25,7 +25,6 @@ public:
 
 protected:
   Request* InternalCreateRequest() override;
-  void InternalPollRequests() override;
   bool StartRequest(HTTPDownloader::Request* request) override;
   void CloseRequest(HTTPDownloader::Request* request) override;
 
@@ -127,7 +126,7 @@ void CALLBACK HTTPDownloaderWinHttp::HTTPStatusCallback(HINTERNET hRequest, DWOR
       ERROR_LOG("WinHttp async function {} returned error {}", res->dwResult, res->dwError);
       req->status_code = HTTP_STATUS_ERROR;
       req->error.SetStringFmt("WinHttp async function {} returned error {}", res->dwResult, res->dwError);
-      req->state.store(Request::State::Complete);
+      req->state.store(Request::State::Complete, std::memory_order_release);
       return;
     }
     case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
@@ -139,7 +138,7 @@ void CALLBACK HTTPDownloaderWinHttp::HTTPStatusCallback(HINTERNET hRequest, DWOR
         ERROR_LOG("WinHttpReceiveResponse() failed: {}", err);
         req->status_code = HTTP_STATUS_ERROR;
         req->error.SetWin32("WinHttpReceiveResponse() failed: ", err);
-        req->state.store(Request::State::Complete);
+        req->state.store(Request::State::Complete, std::memory_order_release);
       }
 
       return;
@@ -156,7 +155,7 @@ void CALLBACK HTTPDownloaderWinHttp::HTTPStatusCallback(HINTERNET hRequest, DWOR
         ERROR_LOG("WinHttpQueryHeaders() for status code failed: {}", err);
         req->status_code = HTTP_STATUS_ERROR;
         req->error.SetWin32("WinHttpQueryHeaders() failed: ", err);
-        req->state.store(Request::State::Complete);
+        req->state.store(Request::State::Complete, std::memory_order_release);
         return;
       }
 
@@ -188,7 +187,7 @@ void CALLBACK HTTPDownloaderWinHttp::HTTPStatusCallback(HINTERNET hRequest, DWOR
 
       DEV_LOG("Status code {}, content-length is {}", req->status_code, req->content_length);
       req->data.reserve(req->content_length);
-      req->state = Request::State::Receiving;
+      req->state.store(Request::State::Receiving, std::memory_order_release);
 
       // start reading
       if (!WinHttpQueryDataAvailable(hRequest, nullptr) && GetLastError() != ERROR_IO_PENDING)
@@ -197,7 +196,7 @@ void CALLBACK HTTPDownloaderWinHttp::HTTPStatusCallback(HINTERNET hRequest, DWOR
         ERROR_LOG("WinHttpQueryDataAvailable() failed: {}", err);
         req->status_code = HTTP_STATUS_ERROR;
         req->error.SetWin32("WinHttpQueryDataAvailable() failed: ", err);
-        req->state.store(Request::State::Complete);
+        req->state.store(Request::State::Complete, std::memory_order_release);
       }
 
       return;
@@ -210,7 +209,7 @@ void CALLBACK HTTPDownloaderWinHttp::HTTPStatusCallback(HINTERNET hRequest, DWOR
       {
         // end of request
         DEV_LOG("End of request '{}', {} bytes received", req->url, req->data.size());
-        req->state.store(Request::State::Complete);
+        req->state.store(Request::State::Complete, std::memory_order_release);
         return;
       }
 
@@ -225,7 +224,7 @@ void CALLBACK HTTPDownloaderWinHttp::HTTPStatusCallback(HINTERNET hRequest, DWOR
         ERROR_LOG("WinHttpReadData() failed: {}", err);
         req->status_code = HTTP_STATUS_ERROR;
         req->error.SetWin32("WinHttpReadData() failed: ", err);
-        req->state.store(Request::State::Complete);
+        req->state.store(Request::State::Complete, std::memory_order_release);
       }
 
       return;
@@ -245,7 +244,7 @@ void CALLBACK HTTPDownloaderWinHttp::HTTPStatusCallback(HINTERNET hRequest, DWOR
         ERROR_LOG("WinHttpQueryDataAvailable() failed: {}", err);
         req->status_code = HTTP_STATUS_ERROR;
         req->error.SetWin32("WinHttpQueryDataAvailable() failed: ", err);
-        req->state.store(Request::State::Complete);
+        req->state.store(Request::State::Complete, std::memory_order_release);
       }
 
       return;
@@ -260,11 +259,6 @@ HTTPDownloader::Request* HTTPDownloaderWinHttp::InternalCreateRequest()
 {
   Request* req = new Request();
   return req;
-}
-
-void HTTPDownloaderWinHttp::InternalPollRequests()
-{
-  // noop - it uses windows's worker threads
 }
 
 bool HTTPDownloaderWinHttp::StartRequest(HTTPDownloader::Request* request)

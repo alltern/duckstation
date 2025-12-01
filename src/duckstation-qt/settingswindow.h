@@ -10,7 +10,7 @@
 
 #include <QtCore/QMap>
 #include <QtCore/QString>
-#include <QtWidgets/QDialog>
+#include <QtWidgets/QWidget>
 #include <array>
 #include <optional>
 
@@ -22,6 +22,10 @@ namespace GameDatabase {
 enum class Trait : u32;
 struct Entry;
 } // namespace GameDatabase
+
+namespace GameList {
+struct Entry;
+} // namespace GameList
 
 class GameSummaryWidget;
 class InterfaceSettingsWidget;
@@ -45,12 +49,9 @@ class SettingsWindow final : public QWidget
 
 public:
   SettingsWindow();
-  SettingsWindow(const std::string& path, std::string title, std::string serial, GameHash hash, DiscRegion region,
-                 const GameDatabase::Entry* entry, std::unique_ptr<INISettingsInterface> sif);
   ~SettingsWindow();
 
-  static SettingsWindow* openGamePropertiesDialog(const std::string& path, std::string title, std::string serial,
-                                                  GameHash hash, DiscRegion region, const char* category = nullptr);
+  static SettingsWindow* openGamePropertiesDialog(const GameList::Entry* entry, const char* category = nullptr);
   static void closeGamePropertiesDialogs();
 
   // Helper for externally setting fields in game settings ini.
@@ -63,6 +64,7 @@ public:
   ALWAYS_INLINE const std::string& getGameTitle() const { return m_title; }
   ALWAYS_INLINE const std::string& getGameSerial() const { return m_serial; }
   ALWAYS_INLINE const std::optional<GameHash>& getGameHash() const { return m_hash; }
+  ALWAYS_INLINE const std::string& getGamePath() const { return m_path; }
   ALWAYS_INLINE const GameDatabase::Entry* getDatabaseEntry() const { return m_database_entry; }
   ALWAYS_INLINE bool hasDatabaseEntry() const { return (m_database_entry != nullptr); }
 
@@ -103,21 +105,15 @@ public:
   void removeSettingValue(const char* section, const char* key);
   void saveAndReloadGameSettings();
 
-  void setGameTitle(std::string title);
+  void setGameTitle(std::string_view title);
   bool hasGameTrait(GameDatabase::Trait trait);
+  bool isGameHashStable() const;
 
-Q_SIGNALS:
-  void settingsResetToDefaults();
-
-public Q_SLOTS:
   void setCategory(const char* category);
   void setCategoryRow(int index);
 
-private Q_SLOTS:
-  void onCategoryCurrentRowChanged(int row);
-  void onRestoreDefaultsClicked();
-  void onCopyGlobalSettingsClicked();
-  void onClearSettingsClicked();
+Q_SIGNALS:
+  void settingsResetToDefaults();
 
 protected:
   void closeEvent(QCloseEvent* event) override;
@@ -129,12 +125,20 @@ private:
     MAX_SETTINGS_WIDGETS = 13
   };
 
+  // Private constructor used by openGamePropertiesDialog()
+  SettingsWindow(const GameList::Entry* entry, std::unique_ptr<INISettingsInterface> sif);
+
   void connectUi();
   void addPages();
   void reloadPages();
 
   void addWidget(QWidget* widget, QString title, QString icon, QString help_text);
   bool handleWheelEvent(QWheelEvent* event);
+
+  void onCategoryCurrentRowChanged(int row);
+  void onRestoreDefaultsClicked();
+  void onCopyGlobalSettingsClicked();
+  void onClearSettingsClicked();
 
   Ui::SettingsWindow m_ui;
 
@@ -162,6 +166,7 @@ private:
   QObject* m_current_help_widget = nullptr;
   QMap<QObject*, QString> m_widget_help_text_map;
 
+  std::string m_path;
   std::string m_title;
   std::string m_serial;
   std::optional<GameHash> m_hash;

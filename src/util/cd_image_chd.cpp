@@ -65,7 +65,7 @@ public:
 
   bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index) override;
   bool HasSubchannelData() const override;
-  PrecacheResult Precache(ProgressCallback* progress) override;
+  PrecacheResult Precache(ProgressCallback* progress, Error* error) override;
   bool IsPrecached() const override;
   s64 GetSizeOnDisk() const override;
 
@@ -444,22 +444,28 @@ bool CDImageCHD::HasSubchannelData() const
   return (m_tracks.front().submode != CDImage::SubchannelMode::None);
 }
 
-CDImage::PrecacheResult CDImageCHD::Precache(ProgressCallback* progress)
+CDImage::PrecacheResult CDImageCHD::Precache(ProgressCallback* progress, Error* error)
 {
   if (m_precached)
     return CDImage::PrecacheResult::Success;
 
-  progress->SetStatusText("Precaching CHD...");
+  progress->SetTitle("Precaching CHD...");
   progress->SetProgressRange(100);
 
   auto callback = [](size_t pos, size_t total, void* param) {
     constexpr size_t one_mb = 1048576;
-    static_cast<ProgressCallback*>(param)->SetProgressRange(static_cast<u32>((total + (one_mb - 1)) / one_mb));
-    static_cast<ProgressCallback*>(param)->SetProgressValue(static_cast<u32>((pos + (one_mb - 1)) / one_mb));
+    const u32 total_mb = static_cast<u32>((total + (one_mb - 1)) / one_mb);
+    const u32 pos_mb = static_cast<u32>((pos + (one_mb - 1)) / one_mb);
+    static_cast<ProgressCallback*>(param)->SetProgressRange(total_mb);
+    static_cast<ProgressCallback*>(param)->SetProgressValue(pos_mb);
+    static_cast<ProgressCallback*>(param)->SetStatusText(TinyString::from_format("{}MB of {}MB", pos_mb, total_mb));
   };
 
-  if (chd_precache_progress(m_chd, callback, progress) != CHDERR_NONE)
+  if (const chd_error err = chd_precache_progress(m_chd, callback, progress); err != CHDERR_NONE)
+  {
+    Error::SetStringFmt(error, "chd_precache_progress() failed: {}", chd_error_string(err));
     return CDImage::PrecacheResult::ReadError;
+  }
 
   m_precached = true;
   return CDImage::PrecacheResult::Success;

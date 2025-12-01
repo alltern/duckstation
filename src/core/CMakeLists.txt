@@ -38,8 +38,14 @@ add_library(core
   digital_controller.h
   dma.cpp
   dma.h
-  fullscreen_ui.cpp
-  fullscreen_ui.h
+  fullscreenui.cpp
+  fullscreenui.h
+  fullscreenui_achievements.cpp
+  fullscreenui_game_list.cpp
+  fullscreenui_private.h
+  fullscreenui_settings.cpp
+  fullscreenui_widgets.cpp
+  fullscreenui_widgets.h
   game_database.cpp
   game_database.h
   game_list.cpp
@@ -221,12 +227,6 @@ function(add_core_resources target)
     endif()
     add_resources(${target} ${path} ${CMAKE_SOURCE_DIR}/data/resources/)
   endforeach()
-  if(ALLOW_INSTALL)
-    install_imported_dep_library(cpuinfo::cpuinfo)
-    install_imported_dep_library(DiscordRPC::discord-rpc)
-    install_imported_dep_library(libzip::zip)
-    install(DIRECTORY "$<TARGET_FILE_DIR:${target}>/resources" DESTINATION "${CMAKE_INSTALL_BINDIR}")
-  endif()
 
   # Linux platforms need a copy of the .desktop and icon file because Wayland stupidity.
   # See QtHost::EarlyProcessStartup() for where this is used and why. We still need to set it when running

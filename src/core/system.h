@@ -34,6 +34,9 @@ class MediaCapture;
 namespace GameDatabase {
 struct Entry;
 }
+namespace GameList {
+struct Entry;
+}
 
 struct SystemBootParameters
 {
@@ -46,11 +49,14 @@ struct SystemBootParameters
   std::string path;
   std::string save_state;
   std::string override_exe;
+  u32 media_playlist_index = 0;
+
   std::optional<bool> override_fast_boot;
   std::optional<bool> override_fullscreen;
   std::optional<bool> override_start_paused;
-  u32 media_playlist_index = 0;
+
   bool load_image_to_ram = false;
+  bool ignore_missing_subchannel = false;
   bool force_software_renderer = false;
   bool disable_achievements_hardcore_mode = false;
   bool start_media_capture = false;
@@ -157,6 +163,9 @@ DiscRegion GetRegionForPsf(const char* path);
 /// Returns the path for the game settings ini file for the specified serial.
 std::string GetGameSettingsPath(std::string_view game_serial, bool ignore_disc_set);
 
+/// Returns true if separate disc settings should be used for the specified serial.
+bool ShouldUseSeparateDiscSettingsForSerial(std::string_view game_serial);
+
 /// Returns the loaded interface for the game settings ini file for the specified serial. If create is true, an empty
 /// ini reader will be returned if the file does not exist. If quit is true, no log messages will be emitted.
 std::unique_ptr<INISettingsInterface> GetGameSettingsInterface(const GameDatabase::Entry* dbentry,
@@ -180,7 +189,6 @@ void CancelPendingStartup();
 void InterruptExecution();
 
 ConsoleRegion GetRegion();
-DiscRegion GetDiscRegion();
 bool IsPALRegion();
 
 /// Taints - flags that are set on the system and only cleared on reset.
@@ -229,8 +237,14 @@ bool IsRunningUnknownGame();
 bool IsUsingKnownPS1BIOS();
 BootMode GetBootMode();
 
+/// Returns a path to the game icon, if any.
+std::string GetGameIconPath();
+
 /// Returns the time elapsed in the current play session.
 u64 GetSessionPlayedTime();
+
+/// Populates a game list entry struct with information from the currently-running game.
+bool PopulateGameListEntryFromCurrentGame(GameList::Entry* entry, Error* error);
 
 void FormatLatencyStats(SmallStringBase& str);
 
@@ -264,12 +278,20 @@ void ResetSystem();
 bool CanPauseSystem(bool display_message);
 
 /// Returns the maximum size of a save state, considering the current configuration.
-size_t GetMaxSaveStateSize();
+size_t GetMaxSaveStateSize(bool enable_8mb_ram);
+
+/// Returns the maximum size of a save state that is not expected to be serialized to file.
+size_t GetMaxMemorySaveStateSize(bool enable_8mb_ram, bool pgxp);
 
 /// Loads state from the specified path.
-bool LoadState(const char* path, Error* error, bool save_undo_state, bool force_update_display);
-bool SaveState(std::string path, Error* error, bool backup_existing_save, bool ignore_memcard_busy);
+std::optional<bool> LoadState(const char* path, Error* error, bool save_undo_state, bool force_update_display);
+bool SaveState(std::string path, Error* error, bool backup_existing_save, bool ignore_memcard_busy,
+               std::function<void(bool, const Error& error)> completion_callback = {});
 bool SaveResumeState(Error* error);
+
+/// Saves/load state to/from slot.
+void LoadStateFromSlot(bool global, s32 slot);
+void SaveStateToSlot(bool global, s32 slot);
 
 /// State data access, use with care as the media path is not updated.
 bool LoadStateDataFromBuffer(std::span<const u8> data, u32 version, Error* error, bool update_display);
@@ -293,7 +315,7 @@ void SetVideoFrameRate(float frequency);
 
 // Access controllers for simulating input.
 Controller* GetController(u32 slot);
-void UpdateMemoryCardTypes();
+void UpdateMemoryCards();
 bool HasMemoryCard(u32 slot);
 bool IsSavingMemoryCards();
 
@@ -301,16 +323,14 @@ bool IsSavingMemoryCards();
 void SwapMemoryCards();
 
 /// Dumps RAM to a file.
-bool DumpRAM(const char* path);
+bool DumpRAM(std::string path, Error* error);
 
 /// Dumps video RAM to a file.
-bool DumpVRAM(const char* path);
+bool DumpVRAM(std::string path, Error* error);
 
 /// Dumps sound RAM to a file.
-bool DumpSPURAM(const char* path);
+bool DumpSPURAM(std::string path, Error* error);
 
-bool HasMedia();
-std::string GetMediaPath();
 bool InsertMedia(const char* path);
 void RemoveMedia();
 
@@ -322,9 +342,6 @@ u32 GetMediaSubImageCount();
 
 /// Returns the current image from the media/disc playlist.
 u32 GetMediaSubImageIndex();
-
-/// Returns the index of the specified path in the playlist, or UINT32_MAX if it does not exist.
-u32 GetMediaSubImageIndexForTitle(std::string_view title);
 
 /// Returns the path to the specified playlist index.
 std::string GetMediaSubImageTitle(u32 index);
@@ -375,7 +392,7 @@ bool CanUndoLoadState();
 std::optional<ExtendedSaveStateInfo> GetUndoSaveStateInfo();
 
 /// Undoes a load state, i.e. restores the state prior to the load.
-bool UndoLoadState();
+void UndoLoadState();
 
 /// Returns a list of save states for the specified game code.
 std::vector<SaveStateInfo> GetAvailableSaveStates(std::string_view serial);
@@ -390,7 +407,7 @@ std::optional<ExtendedSaveStateInfo> GetExtendedSaveStateInfo(const char* path);
 void DeleteSaveStates(std::string_view serial, bool resume);
 
 /// Returns the path to the memory card for the specified game, considering game settings.
-std::string GetGameMemoryCardPath(std::string_view serial, std::string_view path, u32 slot,
+std::string GetGameMemoryCardPath(std::string_view save_title, std::string_view serial, std::string_view path, u32 slot,
                                   MemoryCardType* out_type = nullptr);
 
 /// Returns intended output volume considering fast forwarding.
@@ -432,9 +449,10 @@ std::string GetImageForLoadingScreen(const std::string& game_path);
 //////////////////////////////////////////////////////////////////////////
 // Memory Save States (Rewind and Runahead)
 //////////////////////////////////////////////////////////////////////////
-void CalculateRewindMemoryUsage(u32 num_saves, u32 resolution_scale, u64* ram_usage, u64* vram_usage);
+void CalculateRewindMemoryUsage(u32 num_saves, u32 resolution_scale, u32 multisamples, bool use_software_renderer,
+                                bool enable_8mb_ram, u64* ram_usage, u64* vram_usage);
 void ClearMemorySaveStates(bool reallocate_resources, bool recycle_textures);
-void SetRunaheadReplayFlag();
+void SetRunaheadReplayFlag(bool is_analog_input);
 
 /// Asynchronous work tasks, complete on worker thread.
 void QueueAsyncTask(std::function<void()> function);

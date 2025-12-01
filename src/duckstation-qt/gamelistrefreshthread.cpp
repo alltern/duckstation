@@ -10,9 +10,9 @@
 #include "common/progress_callback.h"
 #include "common/timer.h"
 
-#include <QtWidgets/QMessageBox>
-
 #include "moc_gamelistrefreshthread.cpp"
+
+LOG_CHANNEL(Host);
 
 GameListRefreshThread::GameListRefreshThread(bool invalidate_cache) : QThread(), m_invalidate_cache(invalidate_cache)
 {
@@ -79,24 +79,8 @@ void GameListRefreshThread::SetProgressValue(u32 value)
   fireUpdate();
 }
 
-void GameListRefreshThread::ModalError(const std::string_view message)
-{
-  QMessageBox::critical(nullptr, QStringLiteral("Error"), QtUtils::StringViewToQString(message));
-}
-
-bool GameListRefreshThread::ModalConfirmation(const std::string_view message)
-{
-  return QMessageBox::question(nullptr, QStringLiteral("Question"), QtUtils::StringViewToQString(message)) ==
-         QMessageBox::Yes;
-}
-
-void GameListRefreshThread::ModalInformation(const std::string_view message)
-{
-  QMessageBox::information(nullptr, QStringLiteral("Information"), QtUtils::StringViewToQString(message));
-}
-
 void GameListRefreshThread::fireUpdate()
 {
   emit refreshProgress(m_status_text, m_last_value, m_last_range, static_cast<int>(GameList::GetEntryCount()),
-                       m_start_time.GetTimeSeconds());
+                       static_cast<float>(m_start_time.GetTimeSeconds()));
 }

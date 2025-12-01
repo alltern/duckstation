@@ -5,7 +5,7 @@
 #include "cdrom_async_reader.h"
 #include "cdrom_subq_replacement.h"
 #include "dma.h"
-#include "fullscreen_ui.h"
+#include "fullscreenui.h"
 #include "host.h"
 #include "interrupt_controller.h"
 #include "mdec.h"
@@ -21,6 +21,7 @@
 
 #include "common/align.h"
 #include "common/bitfield.h"
+#include "common/error.h"
 #include "common/fifo_queue.h"
 #include "common/file_system.h"
 #include "common/gsvector.h"
@@ -934,12 +935,15 @@ bool CDROM::CanReadMedia()
 }
 
 bool CDROM::InsertMedia(std::unique_ptr<CDImage>& media, DiscRegion region, std::string_view serial,
-                        std::string_view title, Error* error)
+                        std::string_view title, std::string_view save_title, Error* error)
 {
   // Load SBI/LSD first.
   std::unique_ptr<CDROMSubQReplacement> subq;
-  if (!media->HasSubchannelData() && !CDROMSubQReplacement::LoadForImage(&subq, media.get(), serial, title, error))
+  if (!media->HasSubchannelData() &&
+      !CDROMSubQReplacement::LoadForImage(&subq, media.get(), serial, title, save_title, error))
+  {
     return false;
+  }
 
   if (CanReadMedia())
     RemoveMedia(true);
@@ -1014,17 +1018,18 @@ bool CDROM::PrecacheMedia()
   if (s_reader.GetMedia()->HasSubImages() && s_reader.GetMedia()->GetSubImageCount() > 1)
   {
     Host::AddOSDMessage(
+      OSDMessageType::Error,
       fmt::format(TRANSLATE_FS("OSDMessage", "CD image preloading not available for multi-disc image '{}'"),
-                  FileSystem::GetDisplayNameFromPath(s_reader.GetMedia()->GetPath())),
-      Host::OSD_ERROR_DURATION);
+                  FileSystem::GetDisplayNameFromPath(s_reader.GetMedia()->GetPath())));
     return false;
   }
 
-  LoadingScreenProgressCallback callback;
-  if (!s_reader.Precache(&callback))
+  Error error;
+  FullscreenUI::LoadingScreenProgressCallback callback;
+  if (!s_reader.Precache(&callback, &error))
   {
-    Host::AddOSDMessage(TRANSLATE_STR("OSDMessage", "Precaching CD image failed, it may be unreliable."),
-                        Host::OSD_ERROR_DURATION);
+    Host::AddOSDMessage(OSDMessageType::Error,
+                        TRANSLATE_STR("OSDMessage", "Precaching CD image failed, it may be unreliable."));
     return false;
   }
 
@@ -3292,11 +3297,10 @@ void CDROM::DoSectorRead()
   // TODO: Queue the next read here and swap the buffer.
   if (!s_reader.WaitForReadToComplete()) [[unlikely]]
   {
-    Host::AddIconOSDWarning(
-      "DiscReadError", ICON_EMOJI_WARNING,
-      TRANSLATE_STR("OSDMessage", "Failed to read sector from disc image. The game will probably crash now.\nYour "
-                                  "dump may be corrupted, or the physical disc is scratched."),
-      Host::OSD_CRITICAL_ERROR_DURATION);
+    Host::AddIconOSDMessage(
+      OSDMessageType::Error, "DiscReadError", ICON_EMOJI_WARNING, TRANSLATE_STR("CDROM", "Disc Read Error"),
+      TRANSLATE_STR(
+        "CDROM", "The game will probably crash now.\nYour dump may be corrupted, or the physical disc is scratched."));
     StopReadingWithError();
     return;
   }

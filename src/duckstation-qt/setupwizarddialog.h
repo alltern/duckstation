@@ -3,19 +3,14 @@
 
 #pragma once
 
-#include "biossettingswidget.h"
-
 #include "ui_setupwizarddialog.h"
 
-#include "core/bios.h"
-
-#include <QtCore/QList>
 #include <QtCore/QString>
-#include <QtCore/QVector>
 #include <QtWidgets/QDialog>
+#include <QtWidgets/QLabel>
+#include <array>
 #include <string>
 #include <utility>
-#include <vector>
 
 class SetupWizardDialog final : public QDialog
 {
@@ -24,25 +19,6 @@ class SetupWizardDialog final : public QDialog
 public:
   SetupWizardDialog();
   ~SetupWizardDialog();
-
-private Q_SLOTS:
-  bool canShowNextPage();
-  void previousPage();
-  void nextPage();
-  void confirmCancel();
-
-  void themeChanged();
-  void languageChanged();
-
-  void refreshBiosList();
-
-  void onDirectoryListContextMenuRequested(const QPoint& point);
-  void onAddSearchDirectoryButtonClicked();
-  void onRemoveSearchDirectoryButtonClicked();
-  void onSearchDirectoryListSelectionChanged();
-  void refreshDirectoryList();
-
-  void doMultipleDeviceAutomaticBinding(u32 port, QLabel* update_label);
 
 private:
   enum Page : u32
@@ -69,15 +45,33 @@ private:
   void updatePageLabels(int prev_page);
   void updatePageButtons();
 
+  bool canShowNextPage();
+  void previousPage();
+  void nextPage();
+  void confirmCancel();
+
+  void themeChanged();
+  void languageChanged();
+
+  void refreshBiosList();
+
+  void onDirectoryListContextMenuRequested(const QPoint& point);
+  void onAddSearchDirectoryButtonClicked();
+  void onRemoveSearchDirectoryButtonClicked();
+  void onSearchDirectoryListSelectionChanged();
+  void onSearchDirectoryListItemChanged(QTreeWidgetItem* item, int column);
+  void refreshDirectoryList();
+
+  void doMultipleDeviceAutomaticBinding(u32 port, QLabel* update_label);
+
   void addPathToTable(const std::string& path, bool recursive);
 
   QString findCurrentDeviceForPort(u32 port) const;
   void openAutomaticMappingMenu(u32 port, QLabel* update_label);
   void doDeviceAutomaticBinding(u32 port, QLabel* update_label, const QString& device);
 
-private Q_SLOTS:
-  void onGraphicsAspectRatioChanged();
   void onAchievementsLoginLogoutClicked();
+  void onAchievementsLoginCompleted();
   void onAchievementsViewProfileClicked();
   void updateAchievementsEnableState();
   void updateAchievementsLoginState();

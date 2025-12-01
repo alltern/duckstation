@@ -25,6 +25,17 @@ struct ImFont;
 union InputBindingKey;
 enum class GenericInputBinding : u8;
 
+enum class OSDMessageType : u8
+{
+  Error,
+  Warning,
+  Info,
+  Quick,
+  Persistent,
+
+  MaxCount
+};
+
 namespace Host {
 
 /// Handle representing an auxiliary render window in the host.
@@ -80,23 +91,17 @@ inline constexpr float DEFAULT_SCREEN_MARGIN = 16.0f;
 TextFontOrder GetDefaultTextFontOrder();
 void SetTextFontOrder(const TextFontOrder& order);
 
-/// Changes the global scale.
-void SetGlobalScale(float global_scale);
-
 /// Initializes ImGui, creates fonts, etc.
-bool Initialize(float global_scale, float screen_margin, Error* error);
+bool Initialize(Error* error);
 
 /// Frees all ImGui resources.
-void Shutdown();
+void Shutdown(bool clear_fsui_state);
 
 /// Returns main ImGui context.
 ImGuiContext* GetMainContext();
 
 /// Returns true if there is currently a context created.
 bool IsInitialized();
-
-/// Sets the size of the screen margins, or "safe zone".
-void SetScreenMargin(float margin);
 
 /// Returns the size of the display window. Can be safely called from any thread.
 float GetWindowWidth();
@@ -184,6 +189,12 @@ void RenderSoftwareCursors();
 /// Strips icon characters from a string.
 std::string StripIconCharacters(std::string_view str);
 
+/// Returns the duration for the specified OSD message type.
+float GetOSDMessageDuration(OSDMessageType type);
+
+/// Returns the ending position of OSD messages from the last frame.
+float GetOSDMessageEndPosition();
+
 #ifndef __ANDROID__
 
 /// Auxiliary imgui windows.
@@ -222,22 +233,14 @@ void ProcessAuxiliaryRenderWindowInputEvent(Host::AuxiliaryRenderWindowUserData 
 
 namespace Host {
 
-/// Typical durations for OSD messages.
-inline constexpr float OSD_CRITICAL_ERROR_DURATION = 20.0f;
-inline constexpr float OSD_ERROR_DURATION = 15.0f;
-inline constexpr float OSD_WARNING_DURATION = 10.0f;
-inline constexpr float OSD_INFO_DURATION = 5.0f;
-inline constexpr float OSD_QUICK_DURATION = 2.5f;
-
-/// Adds OSD messages, duration is in seconds.
-void AddOSDMessage(std::string message, float duration = 2.0f);
-void AddKeyedOSDMessage(std::string key, std::string message, float duration = 2.0f);
-void AddIconOSDMessage(std::string key, const char* icon, std::string message, float duration = 2.0f);
-void AddKeyedOSDWarning(std::string key, std::string message, float duration = 2.0f);
-void AddIconOSDWarning(std::string key, const char* icon, std::string message, float duration = 2.0f);
+/// Adds OSD messages.
+void AddOSDMessage(OSDMessageType type, std::string message);
+void AddKeyedOSDMessage(OSDMessageType type, std::string key, std::string message);
+void AddIconOSDMessage(OSDMessageType type, std::string key, const char* icon, std::string message);
+void AddIconOSDMessage(OSDMessageType type, std::string key, const char* icon, std::string title, std::string message);
+void AddIconOSDMessage(OSDMessageType type, std::string key, std::string icon, std::string title, std::string message);
 void RemoveKeyedOSDMessage(std::string key);
-void RemoveKeyedOSDWarning(std::string key);
-void ClearOSDMessages(bool clear_warnings);
+void ClearOSDMessages();
 
 /// Called by ImGuiManager when the cursor enters a text field. The host may choose to open an on-screen
 /// keyboard for devices without a physical keyboard.

@@ -74,7 +74,6 @@ std::unique_ptr<GPUTexture> D3D12Device::CreateTexture(u32 width, u32 height, u3
     case GPUTexture::Type::RenderTarget:
     {
       // RT's tend to be larger, so we'll keep them committed for speed.
-      DebugAssert(levels == 1);
       allocationDesc.Flags |= D3D12MA::ALLOCATION_FLAG_COMMITTED;
       desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
       optimized_clear_value.Format = fm.rtv_format;
@@ -566,8 +565,6 @@ void D3D12Texture::Unmap()
 
 void D3D12Texture::GenerateMipmaps()
 {
-  Panic("Not implemented");
-
   for (u32 layer = 0; layer < m_layers; layer++)
   {
     for (u32 dst_level = 1; dst_level < m_levels; dst_level++)
@@ -690,14 +687,12 @@ void D3D12Texture::TransitionSubresourceToState(ID3D12GraphicsCommandList* cmdli
 
 void D3D12Texture::MakeReadyForSampling()
 {
-  if (m_resource_state == D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+  if (m_resource_state == D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE && m_state != State::Cleared)
     return;
 
-  D3D12Device& dev = D3D12Device::GetInstance();
-  if (dev.InRenderPass())
-    dev.EndRenderPass();
-
-  TransitionToState(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  ID3D12GraphicsCommandList4* const cmdlist = GetCommandBufferForUpdate();
+  CommitClear(cmdlist);
+  TransitionToState(cmdlist, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 }
 
 D3D12Sampler::D3D12Sampler(D3D12DescriptorHandle descriptor) : m_descriptor(descriptor)
@@ -718,7 +713,7 @@ void D3D12Sampler::SetDebugName(std::string_view name)
 
 #endif
 
-std::unique_ptr<GPUSampler> D3D12Device::CreateSampler(const GPUSampler::Config& config, Error* error /* = nullptr */)
+D3D12_SAMPLER_DESC D3D12Sampler::GetD3DSamplerDesc(const GPUSampler::Config& config)
 {
   static constexpr std::array<D3D12_TEXTURE_ADDRESS_MODE, static_cast<u8>(GPUSampler::AddressMode::MaxCount)> ta = {{
     D3D12_TEXTURE_ADDRESS_MODE_WRAP,   // Repeat
@@ -742,7 +737,7 @@ std::unique_ptr<GPUSampler> D3D12Device::CreateSampler(const GPUSampler::Config&
   desc.AddressU = ta[static_cast<u8>(config.address_u.GetValue())];
   desc.AddressV = ta[static_cast<u8>(config.address_v.GetValue())];
   desc.AddressW = ta[static_cast<u8>(config.address_w.GetValue())];
-  std::memcpy(desc.BorderColor, RGBA8ToFloat(config.border_color).data(), sizeof(desc.BorderColor));
+  std::memcpy(desc.BorderColor, GPUDevice::RGBA8ToFloat(config.border_color).data(), sizeof(desc.BorderColor));
   desc.MinLOD = static_cast<float>(config.min_lod);
   desc.MaxLOD = static_cast<float>(config.max_lod);
 
@@ -758,9 +753,15 @@ std::unique_ptr<GPUSampler> D3D12Device::CreateSampler(const GPUSampler::Config&
     desc.MaxAnisotropy = 1;
   }
 
+  return desc;
+}
+
+std::unique_ptr<GPUSampler> D3D12Device::CreateSampler(const GPUSampler::Config& config, Error* error /* = nullptr */)
+{
   D3D12DescriptorHandle handle;
   if (m_sampler_heap_manager.Allocate(&handle)) [[likely]]
   {
+    const D3D12_SAMPLER_DESC desc = D3D12Sampler::GetD3DSamplerDesc(config);
     m_device->CreateSampler(&desc, handle);
     return std::unique_ptr<GPUSampler>(new D3D12Sampler(handle));
   }
@@ -860,10 +861,8 @@ std::unique_ptr<GPUTextureBuffer> D3D12Device::CreateTextureBuffer(GPUTextureBuf
 }
 
 D3D12DownloadTexture::D3D12DownloadTexture(u32 width, u32 height, GPUTexture::Format format,
-                                           ComPtr<D3D12MA::Allocation> allocation, ComPtr<ID3D12Resource> buffer,
-                                           size_t buffer_size)
-  : GPUDownloadTexture(width, height, format, false), m_allocation(std::move(allocation)), m_buffer(std::move(buffer)),
-    m_buffer_size(buffer_size)
+                                           ComPtr<D3D12MA::Allocation> allocation, ComPtr<ID3D12Resource> buffer)
+  : GPUDownloadTexture(width, height, format, false), m_allocation(std::move(allocation)), m_buffer(std::move(buffer))
 {
 }
 
@@ -908,7 +907,7 @@ std::unique_ptr<D3D12DownloadTexture> D3D12DownloadTexture::Create(u32 width, u3
   }
 
   return std::unique_ptr<D3D12DownloadTexture>(
-    new D3D12DownloadTexture(width, height, format, std::move(allocation), std::move(buffer), buffer_size));
+    new D3D12DownloadTexture(width, height, format, std::move(allocation), std::move(buffer)));
 }
 
 void D3D12DownloadTexture::CopyFromTexture(u32 dst_x, u32 dst_y, GPUTexture* src, u32 src_x, u32 src_y, u32 width,

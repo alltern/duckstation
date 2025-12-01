@@ -81,8 +81,8 @@ private:
                D3D12_RESOURCE_STATES resource_state);
 
   ID3D12GraphicsCommandList4* GetCommandBufferForUpdate();
-  ID3D12Resource* AllocateUploadStagingBuffer(const void* data, u32 pitch, u32 upload_pitch, u32 width,
-                                              u32 height, u32 buffer_size) const;
+  ID3D12Resource* AllocateUploadStagingBuffer(const void* data, u32 pitch, u32 upload_pitch, u32 width, u32 height,
+                                              u32 buffer_size) const;
   void ActuallyCommitClear(ID3D12GraphicsCommandList* cmdlist);
 
   ComPtr<ID3D12Resource> m_resource;
@@ -120,6 +120,8 @@ public:
 #ifdef ENABLE_GPU_OBJECT_NAMES
   void SetDebugName(std::string_view name) override;
 #endif
+
+  static D3D12_SAMPLER_DESC GetD3DSamplerDesc(const GPUSampler::Config& config);
 
 private:
   D3D12Sampler(D3D12DescriptorHandle descriptor);
@@ -177,11 +179,10 @@ public:
 
 private:
   D3D12DownloadTexture(u32 width, u32 height, GPUTexture::Format format, ComPtr<D3D12MA::Allocation> allocation,
-                       ComPtr<ID3D12Resource> buffer, size_t buffer_size);
+                       ComPtr<ID3D12Resource> buffer);
 
   ComPtr<D3D12MA::Allocation> m_allocation;
   ComPtr<ID3D12Resource> m_buffer;
 
   u64 m_copy_fence_value = 0;
-  size_t m_buffer_size = 0;
 };

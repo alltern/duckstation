@@ -54,14 +54,15 @@ public:
   void ClearDisplay();
   void ClearDisplayTexture();
   void SetDisplayParameters(u16 display_width, u16 display_height, u16 display_origin_left, u16 display_origin_top,
-                            u16 display_vram_width, u16 display_vram_height, float display_pixel_aspect_ratio);
+                            u16 display_vram_width, u16 display_vram_height, float display_pixel_aspect_ratio,
+                            bool display_24bit);
   void SetDisplayTexture(GPUTexture* texture, s32 view_x, s32 view_y, s32 view_width, s32 view_height);
   bool Deinterlace(u32 field);
   bool ApplyChromaSmoothing();
 
   /// Helper function for computing the draw rectangle in a larger window.
-  void CalculateDrawRect(s32 window_width, s32 window_height, bool apply_aspect_ratio, bool apply_alignment,
-                         GSVector4i* display_rect, GSVector4i* draw_rect) const;
+  void CalculateDrawRect(s32 window_width, s32 window_height, bool apply_aspect_ratio, bool integer_scale,
+                         bool apply_alignment, GSVector4i* display_rect, GSVector4i* draw_rect) const;
 
   /// Helper function for computing screenshot bounds.
   GSVector2i CalculateScreenshotSize(DisplayScreenshotMode mode) const;
@@ -92,7 +93,7 @@ public:
   // Draws the specified bounding box with display rotation and pre-rotation.
   static void DrawScreenQuad(const GSVector4i rect, const GSVector4 uv_rect, const GSVector2i target_size,
                              const GSVector2i final_target_size, DisplayRotation uv_rotation,
-                             WindowInfo::PreRotation prerotation);
+                             WindowInfo::PreRotation prerotation, const void* push_constants, u32 push_constants_size);
 
 private:
   enum : u32
@@ -106,14 +107,18 @@ private:
   bool CompileDisplayPipelines(bool display, bool deinterlace, bool chroma_smoothing, Error* error);
 
   GPUDevice::PresentResult RenderDisplay(GPUTexture* target, const GSVector2i target_size, bool postfx,
-                                         bool apply_aspect_ratio);
+                                         bool apply_aspect_ratio) const;
   void DrawOverlayBorders(const GSVector2i target_size, const GSVector2i final_target_size,
                           const GSVector4i overlay_display_rect, const GSVector4i draw_rect,
-                          const WindowInfo::PreRotation prerotation);
+                          const WindowInfo::PreRotation prerotation) const;
   void DrawDisplay(const GSVector2i target_size, const GSVector2i final_target_size, const GSVector4i display_rect,
-                   bool dst_alpha_blend, DisplayRotation rotation, WindowInfo::PreRotation prerotation);
-  GPUDevice::PresentResult ApplyDisplayPostProcess(GPUTexture* target, GPUTexture* input,
-                                                   const GSVector4i display_rect);
+                   bool dst_alpha_blend, DisplayRotation rotation, WindowInfo::PreRotation prerotation) const;
+
+  GSVector2i CalculateDisplayPostProcessSourceSize() const;
+  GPUTexture* GetDisplayPostProcessInputTexture(const GSVector4i draw_rect_without_overlay,
+                                                DisplayRotation rotation) const;
+  GPUDevice::PresentResult ApplyDisplayPostProcess(GPUTexture* target, GPUTexture* input, const GSVector4i display_rect,
+                                                   const GSVector2i postfx_size) const;
 
   bool DeinterlaceSetTargetSize(u32 width, u32 height, bool preserve);
   void DestroyDeinterlaceTextures();
@@ -143,6 +148,7 @@ private:
   std::unique_ptr<GPUTexture> m_chroma_smoothing_texture;
 
   std::unique_ptr<GPUPipeline> m_display_pipeline;
+  std::unique_ptr<GPUPipeline> m_display_24bit_pipeline;
   GPUTexture* m_display_texture = nullptr;
   s32 m_display_texture_view_x = 0;
   s32 m_display_texture_view_y = 0;
@@ -151,6 +157,7 @@ private:
 
   u32 m_skipped_present_count = 0;
   GPUTexture::Format m_present_format = GPUTexture::Format::Unknown;
+  bool m_display_texture_24bit = false;
   bool m_border_overlay_alpha_blend = false;
   bool m_border_overlay_destination_alpha_blend = false;
 
@@ -162,6 +169,7 @@ private:
   std::unique_ptr<GPUPipeline> m_border_overlay_pipeline;
   std::unique_ptr<GPUPipeline> m_present_clear_pipeline;
   std::unique_ptr<GPUPipeline> m_display_blend_pipeline;
+  std::unique_ptr<GPUPipeline> m_display_24bit_blend_pipeline;
   std::unique_ptr<GPUPipeline> m_present_copy_blend_pipeline;
 
   GSVector4i m_border_overlay_display_rect = GSVector4i::zero();

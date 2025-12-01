@@ -85,8 +85,8 @@ GSVector4 GPUBackend::GetScreenQuadClipSpaceCoordinates(const GSVector4i bounds,
   return GSVector4::xyxy(x, y).xzyw();
 }
 
-void GPUBackend::DrawScreenQuad(const GSVector4i bounds, const GSVector2i rt_size,
-                                const GSVector4 uv_bounds /* = GSVector4::cxpr(0.0f, 0.0f, 1.0f, 1.0f) */)
+void GPUBackend::DrawScreenQuad(const GSVector4i bounds, const GSVector2i rt_size, const GSVector4 uv_bounds,
+                                const void* push_constants, u32 push_constants_size)
 {
   const GSVector4 xy = GetScreenQuadClipSpaceCoordinates(bounds, rt_size);
 
@@ -101,7 +101,11 @@ void GPUBackend::DrawScreenQuad(const GSVector4i bounds, const GSVector2i rt_siz
   vertices[3].Set(xy.zw(), uv_bounds.zw());
 
   g_gpu_device->UnmapVertexBuffer(sizeof(ScreenVertex), 4);
-  g_gpu_device->Draw(4, base_vertex);
+
+  if (push_constants_size > 0)
+    g_gpu_device->DrawWithPushConstants(4, base_vertex, push_constants, push_constants_size);
+  else
+    g_gpu_device->Draw(4, base_vertex);
 }
 
 bool GPUBackend::Initialize(bool clear_vram, Error* error)
@@ -543,10 +547,13 @@ void GPUBackend::HandleCommand(const GPUThreadCommand* cmd)
 
 void GPUBackend::HandleUpdateDisplayCommand(const GPUBackendUpdateDisplayCommand* cmd)
 {
+  s_stats.gpu_busy_pct = cmd->gpu_busy_pct;
+
   // Height has to be doubled because we halved it on the GPU side.
-  m_presenter.SetDisplayParameters(
-    cmd->display_width, cmd->display_height, cmd->display_origin_left, cmd->display_origin_top, cmd->display_vram_width,
-    cmd->display_vram_height << BoolToUInt32(cmd->interlaced_display_enabled), cmd->display_pixel_aspect_ratio);
+  m_presenter.SetDisplayParameters(cmd->display_width, cmd->display_height, cmd->display_origin_left,
+                                   cmd->display_origin_top, cmd->display_vram_width,
+                                   cmd->display_vram_height << BoolToUInt32(cmd->interlaced_display_enabled),
+                                   cmd->display_pixel_aspect_ratio, cmd->display_24bit);
 
   UpdateDisplay(cmd);
   if (cmd->submit_frame)
@@ -579,31 +586,35 @@ void GPUBackend::HandleSubmitFrameCommand(const GPUBackendFramePresentationParam
   RestoreDeviceContext();
 }
 
+#define BOLD(text) "\x02" text "\x01"
+
 void GPUBackend::GetStatsString(SmallStringBase& str) const
 {
   if (IsUsingHardwareBackend())
   {
     if (g_gpu_settings.gpu_pgxp_depth_buffer)
     {
-      str.format("\x02{}{} HW | \x01{}\x02 P | \x01{}\x02 DC | \x01{}\x02 B | \x01{}\x02 RP | \x01{}\x02 RB | \x01{}\x02 C | \x01{}\x02 W | \x01{}\x02 DBC",
+      str.format(BOLD("{}{} HW") " | {} " BOLD("P") " | {} " BOLD("DC") " | {} " BOLD("RB") " | {} " BOLD(
+                   "C") " | {} " BOLD("W") " | {}% " BOLD("U") " | {} " BOLD("DBC"),
                  GPUDevice::RenderAPIToString(g_gpu_device->GetRenderAPI()), g_gpu_settings.gpu_use_thread ? "-MT" : "",
-                 s_stats.num_primitives, s_stats.host_num_draws, s_stats.host_num_barriers,
-                 s_stats.host_num_render_passes, s_stats.host_num_downloads, s_stats.num_copies, s_stats.num_writes,
-                 s_stats.num_depth_buffer_clears);
+                 s_stats.num_primitives, s_stats.host_num_draws, s_stats.host_num_downloads, s_stats.num_copies,
+                 s_stats.num_writes, s_stats.gpu_busy_pct, s_stats.num_depth_buffer_clears);
     }
     else
     {
-      str.format("\x02{}{} HW | \x01{}\x02 P | \x01{}\x02 DC | \x01{}\x02 B | \x01{}\x02 RP | \x01{}\x02 RB | \x01{}\x02 C | \x01{}\x02 W",
+      str.format(BOLD("{}{} HW") " | {} " BOLD("P") " | {} " BOLD("DC") " | {} " BOLD("RB") " | {} " BOLD(
+                   "C") " | {} " BOLD("W") " | {}% " BOLD("U"),
                  GPUDevice::RenderAPIToString(g_gpu_device->GetRenderAPI()), g_gpu_settings.gpu_use_thread ? "-MT" : "",
-                 s_stats.num_primitives, s_stats.host_num_draws, s_stats.host_num_barriers,
-                 s_stats.host_num_render_passes, s_stats.host_num_downloads, s_stats.num_copies, s_stats.num_writes);
+                 s_stats.num_primitives, s_stats.host_num_draws, s_stats.host_num_downloads, s_stats.num_copies,
+                 s_stats.num_writes, s_stats.gpu_busy_pct);
     }
   }
   else
   {
-    str.format("{}{} SW | {} P | {} R | {} C | {} W", GPUDevice::RenderAPIToString(g_gpu_device->GetRenderAPI()),
-               g_gpu_settings.gpu_use_thread ? "-MT" : "", s_stats.num_primitives, s_stats.num_reads,
-               s_stats.num_copies, s_stats.num_writes);
+    str.format(
+      BOLD("{}{} SW") " | {} " BOLD("P") " | {} " BOLD("R") " | {} " BOLD("C") " | {} " BOLD("W") " | {}% " BOLD("U"),
+      GPUDevice::RenderAPIToString(g_gpu_device->GetRenderAPI()), g_gpu_settings.gpu_use_thread ? "-MT" : "",
+      s_stats.num_primitives, s_stats.num_reads, s_stats.num_copies, s_stats.num_writes, s_stats.gpu_busy_pct);
   }
 }
 
@@ -612,9 +623,13 @@ void GPUBackend::GetMemoryStatsString(SmallStringBase& str) const
   const u32 vram_usage_mb = static_cast<u32>((g_gpu_device->GetVRAMUsage() + (1048576 - 1)) / 1048576);
   const u32 stream_kb = static_cast<u32>((s_stats.host_buffer_streamed + (1024 - 1)) / 1024);
 
-  str.format("{} MB VRAM | {} KB STR | {} TC | {} TU", vram_usage_mb, stream_kb, s_stats.host_num_copies,
-             s_stats.host_num_uploads);
+  str.format("{}MB " BOLD("VRAM") " | {}KB " BOLD("STR") " | {} " BOLD("B") " | {} " BOLD("RP") " | {} " BOLD(
+               "TC") " | {} " BOLD("TU"),
+             vram_usage_mb, stream_kb, s_stats.host_num_barriers, s_stats.host_num_render_passes,
+             s_stats.host_num_copies, s_stats.host_num_uploads);
 }
+
+#undef BOLD
 
 void GPUBackend::ResetStatistics()
 {
@@ -680,7 +695,7 @@ bool GPUBackend::RenderScreenshotToBuffer(u32 width, u32 height, bool postfx, bo
         // Crop it if border overlay isn't enabled.
         GSVector4i draw_rect, display_rect;
         backend->GetPresenter().CalculateDrawRect(static_cast<s32>(width), static_cast<s32>(height), apply_aspect_ratio,
-                                                  false, &display_rect, &draw_rect);
+                                                  false, false, &display_rect, &draw_rect);
         image_width = static_cast<u32>(display_rect.width());
         image_height = static_cast<u32>(display_rect.height());
       }
@@ -720,8 +735,8 @@ void GPUBackend::RenderScreenshotToFile(const std::string_view path, DisplayScre
         ERROR_LOG("Failed to render {}x{} screenshot: {}", size.x, size.y, error.GetDescription());
         if (show_osd_message)
         {
-          Host::AddIconOSDWarning(
-            std::move(osd_key), ICON_EMOJI_WARNING,
+          Host::AddIconOSDMessage(
+            OSDMessageType::Error, std::move(osd_key), ICON_EMOJI_WARNING,
             fmt::format(TRANSLATE_FS("GPU", "Failed to save screenshot:\n{}"), error.GetDescription()));
         }
 
@@ -738,8 +753,8 @@ void GPUBackend::RenderScreenshotToFile(const std::string_view path, DisplayScre
         ERROR_LOG("Can't open file '{}': {}", Path::GetFileName(path), error.GetDescription());
         if (show_osd_message)
         {
-          Host::AddIconOSDWarning(
-            std::move(osd_key), ICON_EMOJI_WARNING,
+          Host::AddIconOSDMessage(
+            OSDMessageType::Error, std::move(osd_key), ICON_EMOJI_WARNING,
             fmt::format(TRANSLATE_FS("GPU", "Failed to save screenshot:\n{}"), error.GetDescription()));
         }
 
@@ -748,10 +763,9 @@ void GPUBackend::RenderScreenshotToFile(const std::string_view path, DisplayScre
 
       if (show_osd_message)
       {
-        // Use a 60 second timeout to give it plenty of time to actually save.
-        Host::AddIconOSDMessage(osd_key, ICON_EMOJI_CAMERA_WITH_FLASH,
-                                fmt::format(TRANSLATE_FS("GPU", "Saving screenshot to '{}'."), Path::GetFileName(path)),
-                                60.0f);
+        Host::AddIconOSDMessage(
+          OSDMessageType::Persistent, osd_key, ICON_EMOJI_CAMERA_WITH_FLASH,
+          fmt::format(TRANSLATE_FS("GPU", "Saving screenshot to '{}'."), Path::GetFileName(path)));
       }
 
       System::QueueAsyncTask([path = std::move(path), fp = fp.release(), quality,
@@ -789,11 +803,11 @@ void GPUBackend::RenderScreenshotToFile(const std::string_view path, DisplayScre
 
         if (!osd_key.empty())
         {
-          Host::AddIconOSDMessage(std::move(osd_key), ICON_EMOJI_CAMERA,
+          Host::AddIconOSDMessage(result ? OSDMessageType::Info : OSDMessageType::Error, std::move(osd_key),
+                                  ICON_EMOJI_CAMERA,
                                   fmt::format(result ? TRANSLATE_FS("GPU", "Saved screenshot to '{}'.") :
                                                        TRANSLATE_FS("GPU", "Failed to save screenshot to '{}'."),
-                                              Path::GetFileName(path),
-                                              result ? Host::OSD_INFO_DURATION : Host::OSD_ERROR_DURATION));
+                                              Path::GetFileName(path)));
         }
 
         std::fclose(fp);
@@ -947,7 +961,7 @@ void GPUNullBackend::DoMemoryState(StateWrapper& sw, System::MemorySaveState& ms
 {
 }
 
-std::unique_ptr<GPUBackend> GPUBackend::CreateNullBackend(GPUPresenter& presenter)
+Common::unique_aligned_ptr<GPUBackend> GPUBackend::CreateNullBackend(GPUPresenter& presenter)
 {
-  return std::make_unique<GPUNullBackend>(presenter);
+  return Common::make_unique_aligned<GPUNullBackend>(HOST_CACHE_LINE_SIZE, presenter);
 }

@@ -20,8 +20,10 @@
    <string>DuckStation Controller Settings</string>
   </property>
   <property name="windowIcon">
-   <iconset resource="resources/duckstation-qt.qrc">
-    <normaloff>:/icons/duck.png</normaloff>:/icons/duck.png</iconset>
+   <iconset theme="controller-digital-line"/>
+  </property>
+  <property name="class" stdset="0">
+   <string>settings-window</string>
   </property>
   <layout class="QGridLayout" name="gridLayout">
    <item row="0" column="0">
@@ -139,8 +141,6 @@
    </item>
   </layout>
  </widget>
- <resources>
-  <include location="resources/duckstation-qt.qrc"/>
- </resources>
+ <resources/>
  <connections/>
 </ui>

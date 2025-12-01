@@ -25,7 +25,6 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMenu>
-#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
 
@@ -43,6 +42,7 @@ template<typename T>
 struct SettingAccessor
 {
   static void addOption(T* widget, const char* value_name);
+  static void addOption(T* widget, const char* value_name, const QIcon& icon);
 
   static bool getBoolValue(const T* widget);
   static void setBoolValue(T* widget, bool value);
@@ -77,8 +77,6 @@ struct SettingAccessor
 template<>
 struct SettingAccessor<QLineEdit>
 {
-  static void addOption(QLineEdit* widget, const char* value_name) {}
-
   static bool getBoolValue(const QLineEdit* widget) { return widget->text().toInt() != 0; }
   static void setBoolValue(QLineEdit* widget, bool value)
   {
@@ -131,6 +129,10 @@ template<>
 struct SettingAccessor<QComboBox>
 {
   static void addOption(QComboBox* widget, const char* value_name) { widget->addItem(QString::fromUtf8(value_name)); }
+  static void addOption(QComboBox* widget, const char* value_name, const QIcon& icon)
+  {
+    widget->addItem(icon, QString::fromUtf8(value_name));
+  }
 
   static bool isNullValue(const QComboBox* widget) { return (widget->currentIndex() == 0); }
 
@@ -225,8 +227,6 @@ struct SettingAccessor<QComboBox>
 template<>
 struct SettingAccessor<QCheckBox>
 {
-  static void addOption(QCheckBox* widget, const char* value_name) {}
-
   static bool getBoolValue(const QCheckBox* widget) { return widget->isChecked(); }
   static void setBoolValue(QCheckBox* widget, bool value) { widget->setChecked(value); }
   static void makeNullableBool(QCheckBox* widget, bool globalValue) { widget->setTristate(true); }
@@ -300,8 +300,6 @@ struct SettingAccessor<QCheckBox>
 template<>
 struct SettingAccessor<QSlider>
 {
-  static void addOption(QSlider* widget, const char* value_name) {}
-
   static bool isNullable(const QSlider* widget) { return widget->property(NULLABLE_PROPERTY).toBool(); }
 
   static bool getBoolValue(const QSlider* widget) { return widget->value() > 0; }
@@ -387,15 +385,14 @@ struct SettingAccessor<QSlider>
     {
       widget->setContextMenuPolicy(Qt::CustomContextMenu);
       widget->connect(widget, &QSlider::customContextMenuRequested, widget, [widget, func](const QPoint& pt) {
-        QMenu menu(widget);
-        widget->connect(menu.addAction(qApp->translate("SettingWidgetBinder", "Reset")), &QAction::triggered, widget,
-                        [widget, func = std::move(func)]() {
-                          const bool old = widget->blockSignals(true);
-                          setNullableIntValue(widget, std::nullopt);
-                          widget->blockSignals(old);
-                          func();
-                        });
-        menu.exec(widget->mapToGlobal(pt));
+        QMenu* const menu = QtUtils::NewPopupMenu(widget);
+        menu->addAction(qApp->translate("SettingWidgetBinder", "Reset"), [widget, func = std::move(func)]() {
+          const bool old = widget->blockSignals(true);
+          setNullableIntValue(widget, std::nullopt);
+          widget->blockSignals(old);
+          func();
+        });
+        menu->popup(widget->mapToGlobal(pt));
       });
       widget->connect(widget, &QSlider::valueChanged, widget, [widget, func = std::move(func)]() {
         if (widget->property(IS_NULL_PROPERTY).toBool())
@@ -416,8 +413,6 @@ struct SettingAccessor<QSlider>
 template<>
 struct SettingAccessor<QSpinBox>
 {
-  static void addOption(QSpinBox* widget, const char* value_name) {}
-
   static bool isNullable(const QSpinBox* widget) { return widget->property(NULLABLE_PROPERTY).toBool(); }
 
   static void updateFont(QSpinBox* widget, bool isNull)
@@ -522,16 +517,15 @@ struct SettingAccessor<QSpinBox>
     {
       widget->setContextMenuPolicy(Qt::CustomContextMenu);
       widget->connect(widget, &QSpinBox::customContextMenuRequested, widget, [widget, func](const QPoint& pt) mutable {
-        QMenu menu(widget);
-        widget->connect(menu.addAction(qApp->translate("SettingWidgetBinder", "Reset")), &QAction::triggered, widget,
-                        [widget, func = std::move(func)]() {
-                          const bool old = widget->blockSignals(true);
-                          setNullableIntValue(widget, std::nullopt);
-                          widget->blockSignals(old);
-                          updateFont(widget, true);
-                          func();
-                        });
-        menu.exec(widget->mapToGlobal(pt));
+        QMenu* const menu = QtUtils::NewPopupMenu(widget);
+        menu->addAction(qApp->translate("SettingWidgetBinder", "Reset"), [widget, func = std::move(func)]() {
+          const bool old = widget->blockSignals(true);
+          setNullableIntValue(widget, std::nullopt);
+          widget->blockSignals(old);
+          updateFont(widget, true);
+          func();
+        });
+        menu->popup(widget->mapToGlobal(pt));
       });
       widget->connect(widget, &QSpinBox::valueChanged, widget, [widget, func = std::move(func)]() {
         if (widget->property(IS_NULL_PROPERTY).toBool())
@@ -555,8 +549,6 @@ struct SettingAccessor<QSpinBox>
 template<>
 struct SettingAccessor<QDoubleSpinBox>
 {
-  static void addOption(QDoubleSpinBox* widget, const char* value_name) {}
-
   static bool isNullable(const QDoubleSpinBox* widget) { return widget->property(NULLABLE_PROPERTY).toBool(); }
 
   static void updateFont(QDoubleSpinBox* widget, bool isNull)
@@ -661,16 +653,15 @@ struct SettingAccessor<QDoubleSpinBox>
     {
       widget->setContextMenuPolicy(Qt::CustomContextMenu);
       widget->connect(widget, &QDoubleSpinBox::customContextMenuRequested, widget, [widget, func](const QPoint& pt) {
-        QMenu menu(widget);
-        widget->connect(menu.addAction(qApp->translate("SettingWidgetBinder", "Reset")), &QAction::triggered, widget,
-                        [widget, func = std::move(func)]() {
-                          const bool old = widget->blockSignals(true);
-                          setNullableFloatValue(widget, std::nullopt);
-                          widget->blockSignals(old);
-                          updateFont(widget, true);
-                          func();
-                        });
-        menu.exec(widget->mapToGlobal(pt));
+        QMenu* const menu = QtUtils::NewPopupMenu(widget);
+        menu->addAction(qApp->translate("SettingWidgetBinder", "Reset"), [widget, func = std::move(func)]() {
+          const bool old = widget->blockSignals(true);
+          setNullableFloatValue(widget, std::nullopt);
+          widget->blockSignals(old);
+          updateFont(widget, true);
+          func();
+        });
+        menu->popup(widget->mapToGlobal(pt));
       });
       widget->connect(widget, QOverload<double>::of(&QDoubleSpinBox::valueChanged), widget,
                       [widget, func = std::move(func)]() {
@@ -695,8 +686,6 @@ struct SettingAccessor<QDoubleSpinBox>
 template<>
 struct SettingAccessor<QAction>
 {
-  static void addOption(QAction* widget, const char* value_name) {}
-
   static bool getBoolValue(const QAction* widget) { return widget->isChecked(); }
   static void setBoolValue(QAction* widget, bool value) { widget->setChecked(value); }
   static void makeNullableBool(QAction* widget, bool globalSetting) { widget->setEnabled(false); }
@@ -736,10 +725,10 @@ struct SettingAccessor<QAction>
   template<typename F>
   static void connectValueChanged(QAction* widget, F func)
   {
-    widget->connect(widget, &QAction::toggled, func);
+    widget->connect(widget, &QAction::triggered, func);
   }
 
-  static void disconnect(QAction* widget) { QObject::disconnect(widget, &QAction::toggled, nullptr, nullptr); }
+  static void disconnect(QAction* widget) { QObject::disconnect(widget, &QAction::triggered, nullptr, nullptr); }
 };
 
 /// Binds a widget's value to a setting, updating it when the value changes.
@@ -1156,13 +1145,24 @@ inline void BindWidgetToEnumSetting(SettingsInterface* sif, WidgetType* widget, 
                                     std::optional<DataType> (*from_string_function)(const char* str),
                                     const char* (*to_string_function)(DataType value),
                                     const char* (*to_display_name_function)(DataType value), DataType default_value,
-                                    ValueCountType value_count)
+                                    ValueCountType value_count, QIcon (*item_icon_function)(DataType value) = nullptr)
 {
   using Accessor = SettingAccessor<WidgetType>;
   using UnderlyingType = std::underlying_type_t<DataType>;
 
-  for (UnderlyingType i = 0; i < static_cast<UnderlyingType>(value_count); i++)
-    Accessor::addOption(widget, to_display_name_function(static_cast<DataType>(i)));
+  if (item_icon_function)
+  {
+    for (UnderlyingType i = 0; i < static_cast<UnderlyingType>(value_count); i++)
+    {
+      Accessor::addOption(widget, to_display_name_function(static_cast<DataType>(i)),
+                          item_icon_function(static_cast<DataType>(i)));
+    }
+  }
+  else
+  {
+    for (UnderlyingType i = 0; i < static_cast<UnderlyingType>(value_count); i++)
+      Accessor::addOption(widget, to_display_name_function(static_cast<DataType>(i)));
+  }
 
   const std::string value(
     Host::GetBaseStringSettingValue(section.c_str(), key.c_str(), to_string_function(default_value)));
@@ -1431,14 +1431,13 @@ inline void BindWidgetToFolderSetting(SettingsInterface* sif, QLineEdit* widget,
     if (!new_value.empty())
     {
       if (FileSystem::DirectoryExists(new_value.c_str()) ||
-          QMessageBox::question(
+          QtUtils::MessageBoxQuestion(
             QtUtils::GetRootWidget(widget), qApp->translate("SettingWidgetBinder", "Confirm Folder"),
             qApp
               ->translate(
                 "SettingWidgetBinder",
                 "The chosen directory does not currently exist:\n\n%1\n\nDo you want to create this directory?")
-              .arg(QString::fromStdString(new_value)),
-            QMessageBox::Yes, QMessageBox::No) == QMessageBox::Yes)
+              .arg(QString::fromStdString(new_value))) == QMessageBox::Yes)
       {
         if (use_relative)
         {
@@ -1457,8 +1456,8 @@ inline void BindWidgetToFolderSetting(SettingsInterface* sif, QLineEdit* widget,
     }
     else
     {
-      QMessageBox::critical(QtUtils::GetRootWidget(widget), qApp->translate("SettingWidgetBinder", "Error"),
-                            qApp->translate("SettingWidgetBinder", "Folder path cannot be empty."));
+      QtUtils::AsyncMessageBox(widget, QMessageBox::Critical, qApp->translate("SettingWidgetBinder", "Error"),
+                               qApp->translate("SettingWidgetBinder", "Folder path cannot be empty."));
     }
 
     // reset to old value
@@ -1517,11 +1516,11 @@ inline void SetAvailability(WidgetType* widget, bool available, QLabel* widget_l
   if constexpr (std::is_same_v<WidgetType, QComboBox>)
   {
     widget->clear();
-    widget->addItem(qApp->translate("SettingWidgetBinder", "Incompatible with this game."));
+    widget->addItem(qApp->translate("SettingWidgetBinder", "Incompatible with this game"));
   }
   else if constexpr (std::is_same_v<WidgetType, QLineEdit>)
   {
-    widget->setText(qApp->translate("SettingWidgetBinder", "Incompatible with this game."));
+    widget->setText(qApp->translate("SettingWidgetBinder", "Incompatible with this game"));
   }
   else if constexpr (std::is_same_v<WidgetType, QCheckBox>)
   {
@@ -1537,6 +1536,18 @@ inline void SetAvailability(WidgetType* widget, bool available, QLabel* widget_l
     widget->setValue(0);
   }
 
+  widget->setEnabled(false);
+}
+
+inline void SetForceEnabled(QCheckBox* widget, bool forced)
+{
+  if (!forced)
+    return;
+
+  DisconnectWidget(widget);
+
+  widget->setText(widget->text() + qApp->translate("SettingWidgetBinder", " [forced]"));
+  widget->setCheckState(Qt::Checked);
   widget->setEnabled(false);
 }
 

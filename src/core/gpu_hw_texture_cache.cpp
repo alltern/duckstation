@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "gpu_hw_texture_cache.h"
+#include "fullscreenui_widgets.h"
 #include "game_database.h"
 #include "gpu_hw.h"
 #include "gpu_hw_shadergen.h"
@@ -13,7 +14,6 @@
 #include "system.h"
 
 #include "util/gpu_device.h"
-#include "util/imgui_fullscreen.h"
 #include "util/imgui_manager.h"
 #include "util/state_wrapper.h"
 
@@ -871,6 +871,9 @@ bool GPUTextureCache::CompilePipelines(Error* error)
   plconfig.blend = GPUPipeline::BlendState::GetNoBlendingState();
   plconfig.primitive = GPUPipeline::Primitive::Triangles;
   plconfig.geometry_shader = nullptr;
+  plconfig.samples = 1;
+  plconfig.per_sample_shading = false;
+  plconfig.render_pass_flags = GPUPipeline::NoRenderPassFlags;
   plconfig.SetTargetFormats(REPLACEMENT_TEXTURE_FORMAT);
 
   // Most flags don't matter here.
@@ -1440,10 +1443,9 @@ std::unique_ptr<GPUTexture> GPUTextureCache::FetchTexture(u32 width, u32 height,
   if (!tex) [[unlikely]]
   {
     ERROR_LOG("Failed to create {}x{} texture for cache: {}", width, height, error.GetDescription());
-    Host::AddIconOSDWarning("TCFetchTextureFailed", ICON_EMOJI_WARNING,
+    Host::AddIconOSDMessage(OSDMessageType::Error, "TCFetchTextureFailed", ICON_EMOJI_WARNING,
                             fmt::format(TRANSLATE_FS("GPU_HW", "Failed to allocate {}x{} texture for cache:\n{}"),
-                                        width, height, error.GetDescription()),
-                            Host::OSD_ERROR_DURATION);
+                                        width, height, error.GetDescription()));
   }
 
   return tex;
@@ -3460,8 +3462,10 @@ void GPUTextureCache::PreloadReplacementTextures()
 #define UPDATE_PROGRESS()                                                                                              \
   if (last_update_time.GetTimeSeconds() >= UPDATE_INTERVAL)                                                            \
   {                                                                                                                    \
-    ImGuiFullscreen::RenderLoadingScreen(image_path, "Preloading replacement textures...", 0,                          \
-                                         static_cast<int>(total_textures), static_cast<int>(num_textures_loaded));     \
+    FullscreenUI::RenderLoadingScreen(                                                                                 \
+      image_path, TRANSLATE_SV("GPU_HW", "Preloading replacement textures..."),                                        \
+      TinyString::from_format(TRANSLATE_FS("GPU_HW", "{0} of {1} textures"), num_textures_loaded, total_textures), 0,  \
+      static_cast<int>(total_textures), static_cast<int>(num_textures_loaded));                                        \
     last_update_time.Reset();                                                                                          \
   }
 
@@ -3544,14 +3548,14 @@ std::string GPUTextureCache::GetTextureReplacementDirectory()
     {
       // If this is a multi-disc game, try the first disc.
       const GameDatabase::Entry* dbentry = GameDatabase::GetEntryForSerial(serial);
-      if (dbentry && !dbentry->disc_set_serials.empty() && serial != dbentry->disc_set_serials.front())
+      if (dbentry && dbentry->disc_set && serial != dbentry->disc_set->serials.front())
       {
         altdir =
           Path::Combine(EmuFolders::Textures, SmallString::from_format("{}" FS_OSPATH_SEPARATOR_STR "replacements",
-                                                                       dbentry->disc_set_serials.front()));
+                                                                       dbentry->disc_set->serials.front()));
         if (FileSystem::DirectoryExists(altdir.c_str()))
         {
-          WARNING_LOG("Using texture replacements from first disc {}", dbentry->disc_set_serials.front());
+          WARNING_LOG("Using texture replacements from first disc {}", dbentry->disc_set->serials.front());
           dir = std::move(altdir);
         }
       }
@@ -3702,11 +3706,10 @@ void GPUTextureCache::ReloadTextureReplacements(bool show_info, bool show_info_i
                        s_state.texture_page_texture_replacements.size());
     if (total > 0 || show_info_if_none)
     {
-      Host::AddIconOSDMessage("ReloadTextureReplacements", ICON_FA_IMAGES,
+      Host::AddIconOSDMessage(OSDMessageType::Info, "ReloadTextureReplacements", ICON_FA_IMAGES,
                               (total > 0) ? TRANSLATE_PLURAL_STR("GPU_HW", "%n replacement textures found.",
                                                                  "Replacement texture count", total) :
-                                            TRANSLATE_STR("GPU_HW", "No replacement textures found."),
-                              Host::OSD_INFO_DURATION);
+                                            TRANSLATE_STR("GPU_HW", "No replacement textures found."));
     }
   }
 }
@@ -3832,9 +3835,8 @@ void GPUTextureCache::ApplyTextureReplacements(SourceKey key, HashType tex_hash,
   GSVector2::store<true>(&uniforms[6], GSVector2::cxpr(1.0f) / texture_size);
   g_gpu_device->SetViewportAndScissor(0, 0, new_width, new_height);
   g_gpu_device->SetPipeline(s_state.replacement_upscale_pipeline.get());
-  g_gpu_device->PushUniformBuffer(uniforms, sizeof(uniforms));
   g_gpu_device->SetTextureSampler(0, entry->texture.get(), g_gpu_device->GetNearestSampler());
-  g_gpu_device->Draw(3, 0);
+  g_gpu_device->DrawWithPushConstants(3, 0, uniforms, sizeof(uniforms));
 
   for (const TextureReplacementSubImage& si : subimages)
   {
@@ -3855,8 +3857,7 @@ void GPUTextureCache::ApplyTextureReplacements(SourceKey key, HashType tex_hash,
                                                                                      g_gpu_device->GetNearestSampler());
     g_gpu_device->SetPipeline(si.invert_alpha ? s_state.replacement_semitransparent_draw_pipeline.get() :
                                                 s_state.replacement_draw_pipeline.get());
-    g_gpu_device->PushUniformBuffer(uniforms, sizeof(uniforms));
-    g_gpu_device->Draw(3, 0);
+    g_gpu_device->DrawWithPushConstants(3, 0, uniforms, sizeof(uniforms));
   }
 
   g_gpu_device->CopyTextureRegion(replacement_tex.get(), 0, 0, 0, 0, s_state.replacement_texture_render_target.get(), 0,

@@ -55,6 +55,7 @@ extern "C" {
 #include "libavformat/avformat.h"
 #include "libavformat/version.h"
 #include "libavutil/dict.h"
+#include "libavutil/ffversion.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/version.h"
@@ -2023,18 +2024,18 @@ bool MediaCaptureFFmpeg::LoadFFmpeg(Error* error)
 
   UnloadFFmpeg();
 
-  Error::SetStringFmt(
-    error,
-    TRANSLATE_FS(
-      "MediaCapture",
-      "You may be missing one or more files, or are using the incorrect version. This build of DuckStation requires:\n"
-      "  libavcodec: {}\n"
-      "  libavformat: {}\n"
-      "  libavutil: {}\n"
-      "  libswscale: {}\n"
-      "  libswresample: {}\n"),
-    LIBAVCODEC_VERSION_MAJOR, LIBAVFORMAT_VERSION_MAJOR, LIBAVUTIL_VERSION_MAJOR, LIBSWSCALE_VERSION_MAJOR,
-    LIBSWRESAMPLE_VERSION_MAJOR);
+  Error::SetStringFmt(error,
+                      TRANSLATE_FS("MediaCapture",
+                                   "FFmpeg was not found, or is not the correct version.\n"
+                                   "You can download FFmpeg from {}.\n"
+                                   "This build of DuckStation requires FFmpeg v{}, with library versions:\n"
+                                   "  libavcodec: {}\n"
+                                   "  libavformat: {}\n"
+                                   "  libavutil: {}\n"
+                                   "  libswscale: {}\n"
+                                   "  libswresample: {}\n"),
+                      "https://www.ffmpeg.org/", FFMPEG_VERSION, LIBAVCODEC_VERSION_MAJOR, LIBAVFORMAT_VERSION_MAJOR,
+                      LIBAVUTIL_VERSION_MAJOR, LIBSWSCALE_VERSION_MAJOR, LIBSWRESAMPLE_VERSION_MAJOR);
   return false;
 }
 
@@ -2139,7 +2140,12 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
     }
 
     // Default to VP9, because there's no LGPL H.264 encoder.
+    // Except on MacOS, where we get it through VideoToolbox.
+#ifndef __APPLE__
     constexpr AVCodecID default_video_codec = AV_CODEC_ID_VP9;
+#else
+    constexpr AVCodecID default_video_codec = AV_CODEC_ID_H264;
+#endif
 
     // Use container default if available.
     if (!vcodec && wrap_avformat_query_codec(output_format, default_video_codec, FF_COMPLIANCE_NORMAL))

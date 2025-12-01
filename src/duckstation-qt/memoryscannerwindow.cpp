@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "memoryscannerwindow.h"
+#include "mainwindow.h"
+#include "memoryeditorwindow.h"
 #include "qthost.h"
 #include "qtutils.h"
 
@@ -19,12 +21,9 @@
 
 #include "fmt/format.h"
 
-#include <QtCore/QFileInfo>
 #include <QtGui/QColor>
-#include <QtWidgets/QFileDialog>
+#include <QtWidgets/QComboBox>
 #include <QtWidgets/QInputDialog>
-#include <QtWidgets/QMenu>
-#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QTreeWidgetItemIterator>
 #include <array>
 #include <utility>
@@ -103,7 +102,6 @@ void MemoryScannerWindow::setupAdditionalUi()
 {
   QtUtils::SetColumnWidthsForTableView(m_ui.scanTable, {-1, 100, 100, 100});
   QtUtils::SetColumnWidthsForTableView(m_ui.watchTable, {-1, 100, 100, 150, 40});
-  QtUtils::RestoreWindowGeometry("MemoryScannerWindow", this);
 }
 
 void MemoryScannerWindow::connectUi()
@@ -169,9 +167,11 @@ void MemoryScannerWindow::connectUi()
   connect(m_ui.scanFreezeWatch, &QPushButton::clicked, this, &MemoryScannerWindow::freezeWatchClicked);
   connect(m_ui.scanRemoveWatch, &QPushButton::clicked, this, &MemoryScannerWindow::removeWatchClicked);
   connect(m_ui.scanTable, &QTableWidget::currentItemChanged, this, &MemoryScannerWindow::scanCurrentItemChanged);
-  connect(m_ui.watchTable, &QTableWidget::currentItemChanged, this, &MemoryScannerWindow::watchCurrentItemChanged);
   connect(m_ui.scanTable, &QTableWidget::itemChanged, this, &MemoryScannerWindow::scanItemChanged);
+  connect(m_ui.scanTable, &QTableWidget::itemDoubleClicked, this, &MemoryScannerWindow::scanItemDoubleClicked);
+  connect(m_ui.watchTable, &QTableWidget::currentItemChanged, this, &MemoryScannerWindow::watchCurrentItemChanged);
   connect(m_ui.watchTable, &QTableWidget::itemChanged, this, &MemoryScannerWindow::watchItemChanged);
+  connect(m_ui.watchTable, &QTableWidget::itemDoubleClicked, this, &MemoryScannerWindow::watchItemDoubleClicked);
 
   m_update_timer = new QTimer(this);
   connect(m_update_timer, &QTimer::timeout, this, &MemoryScannerWindow::updateScanUi);
@@ -210,7 +210,7 @@ void MemoryScannerWindow::enableUi(bool enabled)
 
 void MemoryScannerWindow::closeEvent(QCloseEvent* event)
 {
-  QtUtils::SaveWindowGeometry("MemoryScannerWindow", this);
+  QtUtils::SaveWindowGeometry(this);
   QWidget::closeEvent(event);
   emit closed();
 }
@@ -334,8 +334,9 @@ void MemoryScannerWindow::addManualWatchAddressClicked()
     items.append(tr(title));
 
   bool ok = false;
-  QString selected_item(QInputDialog::getItem(this, windowTitle(), tr("Select data size:"), items, 0, false, &ok));
-  int index = items.indexOf(selected_item);
+  const QString selected_item =
+    QInputDialog::getItem(this, windowTitle(), tr("Select data size:"), items, 0, false, &ok);
+  const qsizetype index = items.indexOf(selected_item);
   if (index < 0 || !ok)
     return;
 
@@ -384,10 +385,26 @@ void MemoryScannerWindow::scanCurrentItemChanged(QTableWidgetItem* current, QTab
   m_ui.scanAddWatch->setEnabled((current != nullptr));
 }
 
-void MemoryScannerWindow::watchCurrentItemChanged(QTableWidgetItem* current, QTableWidgetItem* previous)
+void MemoryScannerWindow::scanItemDoubleClicked(QTableWidgetItem* item)
 {
-  m_ui.scanFreezeWatch->setEnabled((current != nullptr));
-  m_ui.scanRemoveWatch->setEnabled((current != nullptr));
+  const QModelIndex index = m_ui.scanTable->indexFromItem(item);
+  if (!index.isValid() || index.column() != 0)
+    return;
+
+  tryOpenAddressInMemoryEditor(item->data(Qt::UserRole).toUInt());
+}
+
+void MemoryScannerWindow::tryOpenAddressInMemoryEditor(VirtualMemoryAddress address)
+{
+  MemoryEditorWindow* const editor = g_main_window->getMemoryEditorWindow();
+  if (!editor->scrollToMemoryAddress(address))
+  {
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, windowTitle(),
+                             tr("Failed to open memory editor at specified address."));
+    return;
+  }
+
+  QtUtils::ShowOrRaiseWindow(editor, g_main_window, true);
 }
 
 void MemoryScannerWindow::scanItemChanged(QTableWidgetItem* item)
@@ -464,6 +481,21 @@ void MemoryScannerWindow::watchItemChanged(QTableWidgetItem* item)
   }
 }
 
+void MemoryScannerWindow::watchCurrentItemChanged(QTableWidgetItem* current, QTableWidgetItem* previous)
+{
+  m_ui.scanFreezeWatch->setEnabled((current != nullptr));
+  m_ui.scanRemoveWatch->setEnabled((current != nullptr));
+}
+
+void MemoryScannerWindow::watchItemDoubleClicked(QTableWidgetItem* item)
+{
+  const QModelIndex index = m_ui.watchTable->indexFromItem(item);
+  if (!index.isValid() || index.column() != 1)
+    return;
+
+  tryOpenAddressInMemoryEditor(item->data(Qt::UserRole).toUInt());
+}
+
 void MemoryScannerWindow::updateScanValue()
 {
   QString value = m_ui.scanValue->text();
@@ -509,6 +541,7 @@ void MemoryScannerWindow::updateResults()
     QTableWidgetItem* address_item = new QTableWidgetItem(formatHexValue(res.address, MemoryAccessSize::Word));
     address_item->setFlags(address_item->flags() & ~(Qt::ItemIsEditable));
     address_item->setTextAlignment(Qt::AlignCenter | Qt::AlignHCenter);
+    address_item->setData(Qt::UserRole, static_cast<uint>(res.address));
     m_ui.scanTable->setItem(row, 0, address_item);
 
     m_ui.scanTable->setItem(row, 1, createValueItem(m_scanner.GetSize(), res.value, m_scanner.GetValueSigned(), true));
@@ -572,6 +605,7 @@ void MemoryScannerWindow::updateWatch()
 
       QTableWidgetItem* address_item = new QTableWidgetItem(formatHexValue(res.address, MemoryAccessSize::Word));
       address_item->setFlags(address_item->flags() & ~(Qt::ItemIsEditable));
+      address_item->setData(Qt::UserRole, static_cast<uint>(res.address));
       m_ui.watchTable->setItem(row, 1, address_item);
 
       QTableWidgetItem* size_item =
@@ -636,8 +670,8 @@ std::string MemoryScannerWindow::getWatchSavePath(bool saving)
     Error error;
     if (!FileSystem::CreateDirectory(dir.c_str(), false, &error))
     {
-      QMessageBox::critical(
-        this, windowTitle(),
+      QtUtils::AsyncMessageBox(
+        this, QMessageBox::Critical, windowTitle(),
         tr("Failed to create watches directory: %1").arg(QString::fromStdString(error.GetDescription())));
       return ret;
     }
@@ -659,8 +693,9 @@ void MemoryScannerWindow::saveWatches()
   Error error;
   if (!m_watch.SaveToFile(path.c_str(), &error))
   {
-    QMessageBox::critical(this, windowTitle(),
-                          tr("Failed to save watches to file: %1").arg(QString::fromStdString(error.GetDescription())));
+    QtUtils::AsyncMessageBox(
+      this, QMessageBox::Critical, windowTitle(),
+      tr("Failed to save watches to file: %1").arg(QString::fromStdString(error.GetDescription())));
   }
 }
 
@@ -676,8 +711,8 @@ void MemoryScannerWindow::reloadWatches()
     Error error;
     if (!m_watch.LoadFromFile(path.c_str(), &error))
     {
-      QMessageBox::critical(
-        this, windowTitle(),
+      QtUtils::AsyncMessageBox(
+        this, QMessageBox::Critical, windowTitle(),
         tr("Failed to load watches from file: %1").arg(QString::fromStdString(error.GetDescription())));
     }
   }

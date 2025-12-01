@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "http_downloader.h"
@@ -13,9 +13,6 @@ LOG_CHANNEL(HTTPDownloader);
 
 static constexpr float DEFAULT_TIMEOUT_IN_SECONDS = 30;
 static constexpr u32 DEFAULT_MAX_ACTIVE_REQUESTS = 4;
-
-const char HTTPDownloader::DEFAULT_USER_AGENT[] =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:85.0) Gecko/20100101 Firefox/85.0";
 
 HTTPDownloader::HTTPDownloader()
   : m_timeout(DEFAULT_TIMEOUT_IN_SECONDS), m_max_active_requests(DEFAULT_MAX_ACTIVE_REQUESTS)
@@ -44,6 +41,13 @@ void HTTPDownloader::CreateRequest(std::string url, Request::Callback callback, 
   req->callback = std::move(callback);
   req->progress = progress;
   req->start_time = Timer::GetCurrentValue();
+
+  // set progress state to indeterminate until we know the size
+  if (req->progress)
+  {
+    req->progress->SetProgressRange(0);
+    req->progress->SetProgressValue(0);
+  }
 
   std::unique_lock lock(m_pending_http_request_lock);
   if (LockedGetActiveRequestCount() < m_max_active_requests)
@@ -82,8 +86,6 @@ void HTTPDownloader::LockedPollRequests(std::unique_lock<std::mutex>& lock)
   if (m_pending_http_requests.empty())
     return;
 
-  InternalPollRequests();
-
   const Timer::Value current_time = Timer::GetCurrentValue();
   u32 active_requests = 0;
   u32 unstarted_requests = 0;
@@ -91,20 +93,21 @@ void HTTPDownloader::LockedPollRequests(std::unique_lock<std::mutex>& lock)
   for (size_t index = 0; index < m_pending_http_requests.size();)
   {
     Request* req = m_pending_http_requests[index];
-    if (req->state == Request::State::Pending)
+    const Request::State req_state = req->state.load(std::memory_order_acquire);
+    if (req_state == Request::State::Pending)
     {
       unstarted_requests++;
       index++;
       continue;
     }
 
-    if ((req->state == Request::State::Started || req->state == Request::State::Receiving) &&
+    if ((req_state == Request::State::Started || req_state == Request::State::Receiving) &&
         current_time >= req->start_time && Timer::ConvertValueToSeconds(current_time - req->start_time) >= m_timeout)
     {
       // request timed out
       ERROR_LOG("Request for '{}' timed out", req->url);
 
-      req->state.store(Request::State::Cancelled);
+      req->state.store(Request::State::Cancelled, std::memory_order_release);
       m_pending_http_requests.erase(m_pending_http_requests.begin() + index);
       lock.unlock();
 
@@ -116,13 +119,13 @@ void HTTPDownloader::LockedPollRequests(std::unique_lock<std::mutex>& lock)
       lock.lock();
       continue;
     }
-    else if ((req->state == Request::State::Started || req->state == Request::State::Receiving) && req->progress &&
+    else if ((req_state == Request::State::Started || req_state == Request::State::Receiving) && req->progress &&
              req->progress->IsCancelled())
     {
       // request timed out
       ERROR_LOG("Request for '{}' cancelled", req->url);
 
-      req->state.store(Request::State::Cancelled);
+      req->state.store(Request::State::Cancelled, std::memory_order_release);
       m_pending_http_requests.erase(m_pending_http_requests.begin() + index);
       lock.unlock();
 
@@ -135,7 +138,7 @@ void HTTPDownloader::LockedPollRequests(std::unique_lock<std::mutex>& lock)
       continue;
     }
 
-    if (req->state != Request::State::Complete)
+    if (req_state != Request::State::Complete)
     {
       if (req->progress)
       {
@@ -238,9 +241,10 @@ void HTTPDownloader::LockedAddRequest(Request* request)
 u32 HTTPDownloader::LockedGetActiveRequestCount()
 {
   u32 count = 0;
-  for (Request* req : m_pending_http_requests)
+  for (const Request* const req : m_pending_http_requests)
   {
-    if (req->state == Request::State::Started || req->state == Request::State::Receiving)
+    const Request::State req_state = req->state.load(std::memory_order_acquire);
+    if (req_state == Request::State::Started || req_state == Request::State::Receiving)
       count++;
   }
   return count;

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
@@ -67,7 +67,7 @@ public:
   HTTPDownloader();
   virtual ~HTTPDownloader();
 
-  static std::unique_ptr<HTTPDownloader> Create(std::string user_agent = DEFAULT_USER_AGENT, Error* error = nullptr);
+  static std::unique_ptr<HTTPDownloader> Create(std::string user_agent, Error* error = nullptr);
   static std::string GetExtensionForContentType(const std::string& content_type);
 
   void SetTimeout(float timeout);
@@ -81,11 +81,8 @@ public:
   void WaitForAllRequestsWithYield(std::function<void()> before_sleep_cb, std::function<void()> after_sleep_cb);
   bool HasAnyRequests();
 
-  static const char DEFAULT_USER_AGENT[];
-
 protected:
   virtual Request* InternalCreateRequest() = 0;
-  virtual void InternalPollRequests() = 0;
 
   virtual bool StartRequest(Request* request) = 0;
   virtual void CloseRequest(Request* request) = 0;

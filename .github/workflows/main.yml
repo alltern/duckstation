@@ -28,26 +28,24 @@ jobs:
   linux-cross-appimage:
     name: 🐧 Linux Cross-Compiled AppImage
     uses: "./.github/workflows/linux-cross-appimage-build.yml"
-  linux-flatpak:
-    name: 📦 Linux Flatpak
-    uses: "./.github/workflows/linux-flatpak-build.yml"
   macos:
     name: 🍎 MacOS
     uses: "./.github/workflows/macos-build.yml"
 
   create-release:
     name: 📤 Create Release
-    needs: [windows, linux-appimage, linux-cross-appimage, linux-flatpak, macos]
+    needs: [windows, linux-appimage, linux-cross-appimage, macos]
     runs-on: ubuntu-22.04
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev'
     steps:
       - name: Download Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           path: ./artifacts/
+          merge-multiple: true
 
       - name: Display Downloaded Artifacts
-        run: find ./artifacts/
+        run: find ./artifacts/ -type f | sort
 
       - name: Create Preview Release
         if: github.ref == 'refs/heads/master'
@@ -58,21 +56,19 @@ jobs:
           prerelease: true
           title: "Latest Preview Build"
           files: |
-            ./artifacts/windows-x64/duckstation-windows-x64-release.zip
-            ./artifacts/windows-x64/duckstation-windows-x64-release-symbols.zip
-            ./artifacts/windows-x64-sse2/duckstation-windows-x64-sse2-release.zip
-            ./artifacts/windows-x64-sse2/duckstation-windows-x64-sse2-release-symbols.zip
-            ./artifacts/windows-arm64/duckstation-windows-arm64-release.zip
-            ./artifacts/windows-arm64/duckstation-windows-arm64-release-symbols.zip
-            ./artifacts/linux-x64-appimage/DuckStation-x64.AppImage
-            ./artifacts/linux-x64-sse2-appimage/DuckStation-x64-SSE2.AppImage
-            ./artifacts/linux-arm64-appimage/DuckStation-arm64.AppImage
-            ./artifacts/linux-arm64-appimage/DuckStation-Mini-arm64.AppImage
-            ./artifacts/linux-armhf-appimage/DuckStation-armhf.AppImage
-            ./artifacts/linux-armhf-appimage/DuckStation-Mini-armhf.AppImage
-            ./artifacts/linux-flatpak-x86_64/duckstation-x86_64.flatpak
-            ./artifacts/linux-flatpak-aarch64/duckstation-aarch64.flatpak
-            ./artifacts/macos/duckstation-mac-release.zip
+            ./artifacts/duckstation-windows-x64-release.zip
+            ./artifacts/duckstation-windows-x64-release-symbols.zip
+            ./artifacts/duckstation-windows-x64-sse2-release.zip
+            ./artifacts/duckstation-windows-x64-sse2-release-symbols.zip
+            ./artifacts/duckstation-windows-arm64-release.zip
+            ./artifacts/duckstation-windows-arm64-release-symbols.zip
+            ./artifacts/DuckStation-x64.AppImage
+            ./artifacts/DuckStation-x64-SSE2.AppImage
+            ./artifacts/DuckStation-arm64.AppImage
+            ./artifacts/DuckStation-Mini-arm64.AppImage
+            ./artifacts/DuckStation-armhf.AppImage
+            ./artifacts/DuckStation-Mini-armhf.AppImage
+            ./artifacts/duckstation-mac-release.zip
 
       - name: Create Rolling Release
         if: github.ref == 'refs/heads/dev'
@@ -83,19 +79,16 @@ jobs:
           prerelease: false
           title: "Latest Rolling Release"
           files: |
-            ./artifacts/windows-x64/duckstation-windows-x64-release.zip
-            ./artifacts/windows-x64/duckstation-windows-x64-release-symbols.zip
-            ./artifacts/windows-x64-sse2/duckstation-windows-x64-sse2-release.zip
-            ./artifacts/windows-x64-sse2/duckstation-windows-x64-sse2-release-symbols.zip
-            ./artifacts/windows-arm64/duckstation-windows-arm64-release.zip
-            ./artifacts/windows-arm64/duckstation-windows-arm64-release-symbols.zip
-            ./artifacts/linux-x64-appimage/DuckStation-x64.AppImage
-            ./artifacts/linux-x64-sse2-appimage/DuckStation-x64-SSE2.AppImage
-            ./artifacts/linux-arm64-appimage/DuckStation-arm64.AppImage
-            ./artifacts/linux-arm64-appimage/DuckStation-Mini-arm64.AppImage
-            ./artifacts/linux-armhf-appimage/DuckStation-armhf.AppImage
-            ./artifacts/linux-armhf-appimage/DuckStation-Mini-armhf.AppImage
-            ./artifacts/linux-flatpak-x86_64/duckstation-x86_64.flatpak
-            ./artifacts/linux-flatpak-aarch64/duckstation-aarch64.flatpak
-            ./artifacts/macos/duckstation-mac-release.zip
-
+            ./artifacts/duckstation-windows-x64-release.zip
+            ./artifacts/duckstation-windows-x64-release-symbols.zip
+            ./artifacts/duckstation-windows-x64-sse2-release.zip
+            ./artifacts/duckstation-windows-x64-sse2-release-symbols.zip
+            ./artifacts/duckstation-windows-arm64-release.zip
+            ./artifacts/duckstation-windows-arm64-release-symbols.zip
+            ./artifacts/DuckStation-x64.AppImage
+            ./artifacts/DuckStation-x64-SSE2.AppImage
+            ./artifacts/DuckStation-arm64.AppImage
+            ./artifacts/DuckStation-Mini-arm64.AppImage
+            ./artifacts/DuckStation-armhf.AppImage
+            ./artifacts/DuckStation-Mini-armhf.AppImage
+            ./artifacts/duckstation-mac-release.zip

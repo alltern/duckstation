@@ -67,16 +67,17 @@ static bool IsUNCPath(const T& path)
 
 static inline bool FileSystemCharacterIsSane(char32_t c, bool strip_slashes)
 {
+  // no newlines, don't be silly. or other control characters...
+  if (c <= static_cast<char32_t>(31))
+    return false;
+
 #ifdef _WIN32
   // https://docs.microsoft.com/en-gb/windows/win32/fileio/naming-a-file?redirectedfrom=MSDN#naming-conventions
   if ((c == U'/' || c == U'\\') && strip_slashes)
     return false;
 
-  if (c == U'<' || c == U'>' || c == U':' || c == U'"' || c == U'|' || c == U'?' || c == U'*' || c == 0 ||
-      c <= static_cast<char32_t>(31))
-  {
+  if (c == U'<' || c == U'>' || c == U':' || c == U'"' || c == U'|' || c == U'?' || c == U'*')
     return false;
-  }
 #else
   if (c == '/' && strip_slashes)
     return false;
@@ -147,6 +148,26 @@ void Path::SanitizeFileName(std::string* str, bool strip_slashes /* = true */)
   if (str->length() > 0 && str->back() == '.')
     str->back() = '_';
 #endif
+}
+
+bool Path::IsFileNameValid(std::string_view str, bool allow_slashes)
+{
+  size_t pos = 0;
+  while (pos < str.length())
+  {
+    char32_t ch;
+    pos += StringUtil::DecodeUTF8(str, pos, &ch);
+    if (!FileSystemCharacterIsSane(ch, !allow_slashes))
+      return false;
+  }
+
+#ifdef _WIN32
+  // Windows: Can't end filename with a period.
+  if (str.length() > 0 && str.back() == '.')
+    return false;
+#endif
+
+  return true;
 }
 
 std::string Path::RemoveLengthLimits(std::string_view str)
@@ -302,11 +323,15 @@ bool Path::IsAbsolute(std::string_view path)
 std::string Path::RealPath(std::string_view path)
 {
   // Resolve non-absolute paths first.
+  std::string abs_path;
   std::vector<std::string_view> components;
   if (!IsAbsolute(path))
-    components = Path::SplitNativePath(Path::Combine(FileSystem::GetWorkingDirectory(), path));
-  else
-    components = Path::SplitNativePath(path);
+  {
+    abs_path = Path::Combine(FileSystem::GetWorkingDirectory(), path);
+    path = abs_path;
+  }
+
+  components = Path::SplitNativePath(path);
 
   std::string realpath;
   if (components.empty())
@@ -587,15 +612,6 @@ std::string_view Path::GetExtension(std::string_view path)
     return std::string_view();
   else
     return path.substr(pos + 1);
-}
-
-std::string_view Path::StripExtension(std::string_view path)
-{
-  const std::string_view::size_type pos = path.rfind('.');
-  if (pos == std::string_view::npos)
-    return path;
-
-  return path.substr(0, pos);
 }
 
 std::string Path::ReplaceExtension(std::string_view path, std::string_view new_extension)
@@ -1451,6 +1467,98 @@ s64 FileSystem::GetPathFileSize(const char* path)
 
   return sd.Size;
 }
+
+FileSystem::LockedFile FileSystem::OpenLockedFile(const char* path, bool for_write, Error* error /* = nullptr */)
+{
+  static constexpr u32 DEFAULT_FILE_LOCK_TIMEOUT = 100;
+  return OpenLockedFile(path, for_write, DEFAULT_FILE_LOCK_TIMEOUT, error);
+}
+
+FileSystem::LockedFile FileSystem::OpenLockedFile(const char* path, bool for_write, u32 timeout_ms, Error* error)
+{
+  const FileSystem::FileShareMode share_mode =
+    for_write ? FileSystem::FileShareMode::DenyReadWrite : FileSystem::FileShareMode::DenyWrite;
+#ifdef _WIN32
+  const char* mode = for_write ? "r+b" : "rb";
+#else
+  // Always open read/write on Linux, since we need it for flock().
+  const char* mode = "r+b";
+#endif
+
+  std::FILE* fp = FileSystem::OpenSharedCFile(path, mode, share_mode, error);
+
+  if (!fp)
+  {
+    // Doesn't exist? Create it.
+    if (errno == ENOENT)
+    {
+      if (!for_write)
+        return {};
+
+      mode = "w+b";
+      fp = FileSystem::OpenSharedCFile(path, mode, share_mode, error);
+    }
+  }
+
+  if (!fp)
+  {
+    // If there's a sharing violation, try again for 100ms.
+    if (errno != EACCES)
+      return {};
+
+    Timer timer;
+    while (timer.GetTimeMilliseconds() <= static_cast<float>(timeout_ms))
+    {
+      fp = FileSystem::OpenSharedCFile(path, mode, share_mode, error);
+      if (fp)
+        break;
+
+      if (errno != EACCES)
+        return {};
+    }
+
+    if (!fp)
+    {
+      Error::SetStringFmt(error, "Timed out while trying to open file", Path::GetFileTitle(path));
+      return {};
+    }
+  }
+
+  Error lock_error;
+  LockedFile ret(fp, &lock_error);
+  if (!ret.IsLocked())
+    ERROR_LOG("Failed to lock file {}: {}", Path::GetFileTitle(path), lock_error.GetDescription());
+
+  return ret;
+}
+
+FileSystem::LockedFile::LockedFile(std::FILE* fp, Error* lock_error)
+  : ManagedCFilePtr(fp)
+#ifdef HAS_POSIX_FILE_LOCK
+    ,
+    m_lock(fp, true, lock_error)
+#endif
+{
+}
+
+std::FILE* FileSystem::LockedFile::release()
+{
+  return nullptr;
+}
+
+#ifdef HAS_POSIX_FILE_LOCK
+
+void FileSystem::LockedFile::reset()
+{
+  // avoid race where the file isn't flushed before it's unlocked
+  if (*this)
+    std::fflush(get());
+
+  m_lock.Unlock();
+  ManagedCFilePtr::reset();
+}
+
+#endif
 
 std::optional<DynamicHeapArray<u8>> FileSystem::ReadBinaryFile(const char* path, Error* error)
 {

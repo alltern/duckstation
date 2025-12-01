@@ -64,9 +64,8 @@ private:
 std::unique_lock<std::recursive_mutex> GetLock();
 
 /// Returns the achievements game hash for a given disc.
-std::optional<GameHash> GetGameHash(CDImage* image, u32* bytes_hashed = nullptr);
-std::optional<GameHash> GetGameHash(const std::string_view executable_name, std::span<const u8> executable_data,
-                                    u32* bytes_hashed = nullptr);
+std::optional<GameHash> GetGameHash(CDImage* image);
+std::optional<GameHash> GetGameHash(const std::string_view executable_name, std::span<const u8> executable_data);
 
 /// Returns the number of achievements for a given hash.
 const HashDatabaseEntry* LookupGameHash(const GameHash& hash);
@@ -117,9 +116,8 @@ void Logout();
 /// Forces hardcore mode off until next reset.
 void DisableHardcoreMode(bool show_message, bool display_game_summary);
 
-/// Prompts the user to disable hardcore mode, if they agree, returns true.
-bool ConfirmHardcoreModeDisable(const char* trigger);
-void ConfirmHardcoreModeDisableAsync(const char* trigger, std::function<void(bool)> callback);
+/// Prompts the user to disable hardcore mode. Invokes callback with result.
+void ConfirmHardcoreModeDisableAsync(std::string_view trigger, std::function<void(bool)> callback);
 
 /// Returns true if hardcore mode is active, and functionality should be restricted.
 bool IsHardcoreModeActive();
@@ -177,43 +175,23 @@ const char* GetLoggedInUserName();
 
 /// Returns the path to the user's profile avatar.
 /// Should be called with the lock held.
-std::string GetLoggedInUserBadgePath();
+const std::string& GetLoggedInUserBadgePath();
 
 /// Returns a summary of the user's points.
 /// Should be called with the lock held.
 SmallString GetLoggedInUserPointsSummary();
 
+/// Returns the path to the local cache for the specified badge name.
+std::string GetGameBadgePath(std::string_view badge_name);
+
 /// Returns 0 if pausing is allowed, otherwise the number of frames until pausing is allowed.
 u32 GetPauseThrottleFrames();
-
-/// Clears all cached state used to render the UI.
-void ClearUIState();
 
 /// Draws ImGui overlays when not paused.
 void DrawGameOverlays();
 
-/// Draws ImGui overlays when paused.
-void DrawPauseMenuOverlays(float start_pos_y);
-
-/// Updates the stored most-recent and closest-to-completion achievements.
-/// Call before calling DrawPauseMenuOverlays() for the first time.
-void UpdateRecentUnlockAndAlmostThere();
-
-#ifndef __ANDROID__
-
-/// Queries the achievement list, and if no achievements are available, returns false.
-bool PrepareAchievementsWindow();
-
-/// Renders the achievement list.
-void DrawAchievementsWindow();
-
-/// Queries the leaderboard list, and if no leaderboards are available, returns false.
-bool PrepareLeaderboardsWindow();
-
-/// Renders the leaderboard list.
-void DrawLeaderboardsWindow();
-
-#endif // __ANDROID__
+/// The name of the RetroAchievements icon, which can be used in notifications.
+extern const char* const RA_LOGO_ICON_NAME;
 
 } // namespace Achievements
 

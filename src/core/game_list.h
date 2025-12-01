@@ -38,12 +38,12 @@ struct Entry
   bool disc_set_member = false;
   bool has_custom_title = false;
   bool has_custom_region = false;
+  bool is_runtime_populated = false;
   GameDatabase::Language custom_language = GameDatabase::Language::MaxCount;
 
   std::string path;
   std::string serial;
   std::string title;
-  std::string disc_set_name;
 
   const GameDatabase::Entry* dbentry = nullptr;
 
@@ -60,6 +60,12 @@ struct Entry
   u16 unlocked_achievements = 0;
   u16 unlocked_achievements_hc = 0;
 
+  std::string_view GetDisplayTitle(bool localized) const;
+
+  std::string_view GetSortTitle() const;
+
+  std::string_view GetSaveTitle() const;
+
   std::string_view GetLanguageIcon() const;
 
   TinyString GetLanguageIconName() const;
@@ -70,8 +76,13 @@ struct Entry
   ALWAYS_INLINE bool IsValid() const { return (type < EntryType::MaxCount); }
   ALWAYS_INLINE bool IsDisc() const { return (type == EntryType::Disc); }
   ALWAYS_INLINE bool IsDiscSet() const { return (type == EntryType::DiscSet); }
+  ALWAYS_INLINE bool IsDiscOrDiscSet() const { return (type == EntryType::Disc || type == EntryType::DiscSet); }
   ALWAYS_INLINE bool HasCustomLanguage() const { return (custom_language != GameDatabase::Language::MaxCount); }
   ALWAYS_INLINE EntryType GetSortType() const { return (type == EntryType::DiscSet) ? EntryType::Disc : type; }
+  ALWAYS_INLINE const GameDatabase::DiscSetEntry* GetDiscSetEntry() const
+  {
+    return dbentry ? dbentry->disc_set : nullptr;
+  }
   ALWAYS_INLINE bool AreAchievementsMastered() const
   {
     return (num_achievements > 0 &&
@@ -87,22 +98,26 @@ const char* GetEntryTypeDisplayName(EntryType type);
 
 bool IsScannableFilename(std::string_view path);
 
-/// Populates a game list entry struct with information from the iso/elf.
-/// Do *not* call while the system is running, it will mess with CDVD state.
+/// Populates a game list entry struct with information from the specified path.
 bool PopulateEntryFromPath(const std::string& path, Entry* entry);
 
 // Game list access. It's the caller's responsibility to hold the lock while manipulating the entry in any way.
 std::unique_lock<std::recursive_mutex> GetLock();
 std::span<const Entry> GetEntries();
-const Entry* GetEntryByIndex(u32 index);
+const Entry* GetEntryByIndex(size_t index);
 const Entry* GetEntryForPath(std::string_view path);
 const Entry* GetEntryBySerial(std::string_view serial);
 const Entry* GetEntryBySerialAndHash(std::string_view serial, u64 hash);
-std::vector<const Entry*> GetDiscSetMembers(std::string_view disc_set_name, bool sort_by_most_recent = false);
-const Entry* GetFirstDiscSetMember(std::string_view disc_set_name);
-u32 GetEntryCount();
+std::vector<const Entry*> GetDiscSetMembers(const GameDatabase::DiscSetEntry* dsentry,
+                                            bool sort_by_most_recent = false);
+const Entry* GetFirstDiscSetMember(const GameDatabase::DiscSetEntry* dsentry);
+size_t GetEntryCount();
 
 bool IsGameListLoaded();
+bool ShouldShowLocalizedTitles();
+
+/// Returns true if the specified path should not have game properties saved.
+bool CanEditGameSettingsForPath(const std::string_view path, const std::string_view serial);
 
 /// Populates the game list with files in the configured directories.
 /// If invalidate_cache is set, all files will be re-scanned.
@@ -132,19 +147,19 @@ std::string FormatTimestamp(std::time_t timestamp);
 TinyString FormatTimespan(std::time_t timespan, bool long_format = false);
 
 std::string GetCoverImagePathForEntry(const Entry* entry);
-std::string GetCoverImagePath(const std::string& path, const std::string& serial, const std::string& title);
+std::string GetCoverImagePath(const std::string_view path, const std::string_view serial, const std::string_view title,
+                              bool is_custom_title);
 std::string GetNewCoverImagePathForEntry(const Entry* entry, const char* new_filename, bool use_serial);
 
 /// Returns a list of (title, entry) for entries matching serials. Titles will match the gamedb title,
 /// except when two files have the same serial, in which case the filename will be used instead.
-std::vector<std::pair<std::string_view, const Entry*>>
-GetMatchingEntriesForSerial(const std::span<const std::string_view> serials);
+std::vector<std::pair<std::string_view, const Entry*>> GetEntriesInDiscSet(const GameDatabase::DiscSetEntry* dsentry,
+                                                                           bool localized_titles);
 
 /// Downloads covers using the specified URL templates. By default, covers are saved by title, but this can be changed
 /// with the use_serial parameter. save_callback optionall takes the entry and the path the new cover is saved to.
-bool DownloadCovers(const std::vector<std::string>& url_templates, bool use_serial = false,
-                    ProgressCallback* progress = nullptr,
-                    std::function<void(const Entry*, std::string)> save_callback = {});
+bool DownloadCovers(const std::vector<std::string>& url_templates, bool use_serial, ProgressCallback* progress,
+                    Error* error, std::function<void(const Entry*, std::string)> save_callback = {});
 
 // Custom properties support
 bool SaveCustomTitleForPath(const std::string& path, const std::string& custom_title);
@@ -156,13 +171,20 @@ std::optional<DiscRegion> GetCustomRegionForPath(const std::string_view path);
 /// The purpose of this cache is to stop us trying to constantly extract memory card icons, when we know a game
 /// doesn't have any saves yet. It caches the serial:memcard_timestamp pair, and only tries extraction when the
 /// timestamp of the memory card has changed.
-std::string GetGameIconPath(std::string_view serial, std::string_view path);
+std::string GetGameIconPath(std::string_view title, std::string_view serial, std::string_view path,
+                            u32 achievements_game_id);
+std::string GetGameIconPath(const GameList::Entry* entry);
 void ReloadMemcardTimestampCache();
 
 /// Updates game list with new achievement unlocks.
 void UpdateAchievementData(const std::span<u8, 16> hash, u32 game_id, u32 num_achievements, u32 num_unlocked,
                            u32 num_unlocked_hardcore);
 void UpdateAllAchievementData();
+
+/// Accesses achievement game badges. Assumes the lock is held.
+bool PreferAchievementGameBadgesForIcons();
+std::string GetAchievementGameBadgePath(u32 game_id);
+void UpdateAchievementBadgeName(u32 game_id, std::string_view badge_name);
 
 } // namespace GameList
 

@@ -166,6 +166,7 @@ enum class GPUDriverType : u16
 
   LLVMPipe = SoftwareFlag | 1,
   SwiftShader = SoftwareFlag | 2,
+  WARP = SoftwareFlag | 3,
 };
 IMPLEMENT_ENUM_CLASS_BITWISE_OPERATORS(GPUDriverType);
 
@@ -211,6 +212,9 @@ public:
 
     // Multiple textures, 128 byte UBO via push constants.
     MultiTextureAndPushConstants,
+
+    // Multiple textures, 1 streamed UBO, 128 byte push constants.
+    MultiTextureAndUBOAndPushConstants,
 
     // Multiple textures, 1 streamed UBO, compute shader.
     ComputeMultiTextureAndUBO,
@@ -578,22 +582,25 @@ class GPUDevice
 public:
   friend GPUTexture;
 
-  // TODO: drop virtuals
-  // TODO: gpu crash handling on present
   using DrawIndex = u16;
 
-  enum FeatureMask : u32
+  enum class CreateFlags : u32
   {
-    FEATURE_MASK_DUAL_SOURCE_BLEND = (1 << 0),
-    FEATURE_MASK_FEEDBACK_LOOPS = (1 << 1),
-    FEATURE_MASK_FRAMEBUFFER_FETCH = (1 << 2),
-    FEATURE_MASK_TEXTURE_BUFFERS = (1 << 3),
-    FEATURE_MASK_GEOMETRY_SHADERS = (1 << 4),
-    FEATURE_MASK_COMPUTE_SHADERS = (1 << 5),
-    FEATURE_MASK_TEXTURE_COPY_TO_SELF = (1 << 6),
-    FEATURE_MASK_MEMORY_IMPORT = (1 << 7),
-    FEATURE_MASK_RASTER_ORDER_VIEWS = (1 << 8),
-    FEATURE_MASK_COMPRESSED_TEXTURES = (1 << 9),
+    None = 0,
+    PreferGLESContext = (1 << 0),
+    EnableDebugDevice = (1 << 1),
+    EnableGPUValidation = (1 << 2),
+    DisableShaderCache = (1 << 3),
+    DisableDualSourceBlend = (1 << 4),
+    DisableFeedbackLoops = (1 << 5),
+    DisableFramebufferFetch = (1 << 6),
+    DisableTextureBuffers = (1 << 7),
+    DisableGeometryShaders = (1 << 8),
+    DisableComputeShaders = (1 << 9),
+    DisableTextureCopyToSelf = (1 << 10),
+    DisableMemoryImport = (1 << 11),
+    DisableRasterOrderViews = (1 << 12),
+    DisableCompressedTextures = (1 << 13),
   };
 
   enum class DrawBarrier : u32
@@ -683,6 +690,7 @@ public:
   static constexpr u32 MAX_IMAGE_RENDER_TARGETS = 2;
   static constexpr u32 DEFAULT_CLEAR_COLOR = 0xFF000000u;
   static constexpr u32 PIPELINE_CACHE_HASH_SIZE = 20;
+  static constexpr u32 BASE_UNIFORM_BUFFER_ALIGNMENT = 16;
   static_assert(sizeof(GPUPipeline::GraphicsConfig::color_formats) == sizeof(GPUTexture::Format) * MAX_RENDER_TARGETS);
 
   GPUDevice();
@@ -715,6 +723,12 @@ public:
   /// Converts a RGBA8 value to 4 floating-point values.
   static std::array<float, 4> RGBA8ToFloat(u32 rgba);
 
+  /// Returns true if the given device creation flag is present.
+  static constexpr bool HasCreateFlag(CreateFlags flags, CreateFlags flag)
+  {
+    return ((static_cast<u32>(flags) & static_cast<u32>(flag)) != 0);
+  }
+
   /// Returns the number of texture bindings for a given pipeline layout.
   static constexpr u32 GetActiveTexturesForLayout(GPUPipeline::Layout layout)
   {
@@ -724,6 +738,7 @@ public:
       0,                    // SingleTextureBufferAndPushConstants
       MAX_TEXTURE_SAMPLERS, // MultiTextureAndUBO
       MAX_TEXTURE_SAMPLERS, // MultiTextureAndPushConstants
+      MAX_TEXTURE_SAMPLERS, // MultiTextureAndUBOAndPushConstants
       MAX_TEXTURE_SAMPLERS, // ComputeMultiTextureAndUBO
       MAX_TEXTURE_SAMPLERS, // ComputeMultiTextureAndPushConstants
     };
@@ -763,10 +778,9 @@ public:
 
   ALWAYS_INLINE bool IsGPUTimingEnabled() const { return m_gpu_timing_enabled; }
 
-  bool Create(std::string_view adapter, FeatureMask disabled_features, std::string_view shader_dump_path,
-              std::string_view shader_cache_path, u32 shader_cache_version, bool debug_device, bool gpu_validation,
-              const WindowInfo& wi, GPUVSyncMode vsync, bool allow_present_throttle,
-              const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
+  bool Create(std::string_view adapter, CreateFlags create_flags, std::string_view shader_dump_path,
+              std::string_view shader_cache_path, u32 shader_cache_version, const WindowInfo& wi, GPUVSyncMode vsync,
+              bool allow_present_throttle, const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
               std::optional<bool> exclusive_fullscreen_control, Error* error);
   void Destroy();
 
@@ -865,7 +879,6 @@ public:
   void UploadIndexBuffer(const DrawIndex* indices, u32 index_count, u32* base_index);
 
   /// Uniform buffer abstraction.
-  virtual void PushUniformBuffer(const void* data, u32 data_size) = 0;
   virtual void* MapUniformBuffer(u32 size) = 0;
   virtual void UnmapUniformBuffer(u32 size) = 0;
   void UploadUniformBuffer(const void* data, u32 data_size);
@@ -887,10 +900,20 @@ public:
 
   // Drawing abstraction.
   virtual void Draw(u32 vertex_count, u32 base_vertex) = 0;
+  virtual void DrawWithPushConstants(u32 vertex_count, u32 base_vertex, const void* push_constants,
+                                     u32 push_constants_size) = 0;
   virtual void DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex) = 0;
-  virtual void DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type) = 0;
+  virtual void DrawIndexedWithPushConstants(u32 index_count, u32 base_index, u32 base_vertex,
+                                            const void* push_constants, u32 push_constants_size) = 0;
+  virtual void DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type);
+  virtual void DrawIndexedWithBarrierWithPushConstants(u32 index_count, u32 base_index, u32 base_vertex,
+                                                       const void* push_constants, u32 push_constants_size,
+                                                       DrawBarrier type);
   virtual void Dispatch(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x, u32 group_size_y,
                         u32 group_size_z) = 0;
+  virtual void DispatchWithPushConstants(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x,
+                                         u32 group_size_y, u32 group_size_z, const void* push_constants,
+                                         u32 push_constants_size) = 0;
 
   /// Returns false if the window was completely occluded.
   virtual PresentResult BeginPresent(GPUSwapChain* swap_chain, u32 clear_color = DEFAULT_CLEAR_COLOR) = 0;
@@ -920,8 +943,8 @@ public:
   static void ResetStatistics();
 
 protected:
-  virtual bool CreateDeviceAndMainSwapChain(std::string_view adapter, FeatureMask disabled_features,
-                                            const WindowInfo& wi, GPUVSyncMode vsync_mode, bool allow_present_throttle,
+  virtual bool CreateDeviceAndMainSwapChain(std::string_view adapter, CreateFlags create_flags, const WindowInfo& wi,
+                                            GPUVSyncMode vsync_mode, bool allow_present_throttle,
                                             const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
                                             std::optional<bool> exclusive_fullscreen_control, Error* error) = 0;
   virtual void DestroyDevice() = 0;
@@ -1030,10 +1053,11 @@ protected:
 
   bool m_gpu_timing_enabled = false;
   bool m_debug_device = false;
-  bool m_debug_device_gpu_validation = false;
 };
 
 extern std::unique_ptr<GPUDevice> g_gpu_device;
+
+IMPLEMENT_ENUM_CLASS_BITWISE_OPERATORS(GPUDevice::CreateFlags);
 
 ALWAYS_INLINE void GPUDevice::PooledTextureDeleter::operator()(GPUTexture* const tex)
 {

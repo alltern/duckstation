@@ -16,8 +16,6 @@ public:
   explicit GameListRefreshThread(bool invalidate_cache);
   ~GameListRefreshThread();
 
-  float timeSinceStart() const;
-
   void cancel();
 
 Q_SIGNALS:
@@ -34,10 +32,6 @@ private:
   void SetStatusText(const std::string_view text) override;
   void SetProgressRange(u32 range) override;
   void SetProgressValue(u32 value) override;
-
-  void ModalError(const std::string_view message) override;
-  bool ModalConfirmation(const std::string_view message) override;
-  void ModalInformation(const std::string_view message) override;
 
   void fireUpdate();
 

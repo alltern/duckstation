@@ -8,11 +8,11 @@
 #include "core/system.h"
 
 #include "util/gpu_device.h"
+#include "util/input_manager.h"
 
 #include "common/error.h"
 #include "common/log.h"
 
-#include <QtCore/QCoreApplication>
 #include <QtCore/QMetaObject>
 #include <QtGui/QDesktopServices>
 #include <QtGui/QGuiApplication>
@@ -23,6 +23,7 @@
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMainWindow>
+#include <QtWidgets/QMenu>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSlider>
@@ -32,23 +33,26 @@
 #include <QtWidgets/QTreeView>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <map>
 
-#if !defined(_WIN32) && !defined(APPLE)
-#include <qpa/qplatformnativeinterface.h>
-#endif
-
-#ifdef _WIN32
+#if defined(_WIN32)
 #include "common/windows_headers.h"
+#elif defined(__APPLE__)
+#include "common/cocoa_tools.h"
+#include "common/thirdparty/usb_key_code_data.h"
+#else
+#include <qpa/qplatformnativeinterface.h>
 #endif
 
 LOG_CHANNEL(Host);
 
 namespace QtUtils {
 
-bool TryMigrateWindowGeometry(SettingsInterface* si, std::string_view window_name, QWidget* widget);
+static bool TryMigrateWindowGeometry(SettingsInterface* si, std::string_view window_name, QWidget* widget);
+static void SetMessageBoxStyle(QMessageBox* const dlg);
 
 static constexpr const char* WINDOW_GEOMETRY_CONFIG_SECTION = "UI";
 
@@ -80,14 +84,22 @@ QWidget* QtUtils::GetRootWidget(QWidget* widget, bool stop_at_window_or_dialog)
   return widget;
 }
 
-void QtUtils::ShowOrRaiseWindow(QWidget* window)
+void QtUtils::ShowOrRaiseWindow(QWidget* window, const QWidget* parent_window, bool restore_geometry)
 {
   if (!window)
     return;
 
   if (!window->isVisible())
   {
+    bool restored = false;
+    if (restore_geometry)
+      restored = RestoreWindowGeometry(window);
+
+    // NOTE: Must be before centering the window, otherwise the size may not be correct.
     window->show();
+
+    if (!restored && parent_window && parent_window->isVisible())
+      CenterWindowRelativeToParent(window, parent_window);
   }
   else
   {
@@ -133,8 +145,8 @@ void QtUtils::OpenURL(QWidget* parent, const QUrl& qurl)
 {
   if (!QDesktopServices::openUrl(qurl))
   {
-    QMessageBox::critical(parent, QObject::tr("Failed to open URL"),
-                          QObject::tr("Failed to open URL.\n\nThe URL was: %1").arg(qurl.toString()));
+    QtUtils::AsyncMessageBox(parent, QMessageBox::Critical, QObject::tr("Failed to open URL"),
+                             QObject::tr("Failed to open URL.\n\nThe URL was: %1").arg(qurl.toString()));
   }
 }
 
@@ -162,7 +174,7 @@ std::optional<unsigned> QtUtils::PromptForAddress(QWidget* parent, const QString
 
   if (!ok)
   {
-    QMessageBox::critical(
+    MessageBoxCritical(
       parent, title,
       qApp->translate("DebuggerWindow", "Invalid address. It should be in hex (0x12345678 or 12345678)"));
     return std::nullopt;
@@ -174,6 +186,13 @@ std::optional<unsigned> QtUtils::PromptForAddress(QWidget* parent, const QString
 QString QtUtils::StringViewToQString(std::string_view str)
 {
   return str.empty() ? QString() : QString::fromUtf8(str.data(), str.size());
+}
+
+QString QtUtils::NormalizeLineEndings(QString str)
+{
+  str.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+  str.replace(QChar('\r'), QChar('\n'));
+  return str;
 }
 
 void QtUtils::SetWidgetFontForInheritedSetting(QWidget* widget, bool inherited)
@@ -231,6 +250,127 @@ void QtUtils::ResizePotentiallyFixedSizeWindow(QWidget* widget, int width, int h
   widget->resize(width, height);
 }
 
+void QtUtils::SetMessageBoxStyle(QMessageBox* const dlg)
+{
+#ifdef __APPLE__
+  // Can't have a stylesheet set even if it doesn't affect the widget.
+  if (QtHost::HasGlobalStylesheet())
+  {
+    dlg->setStyleSheet("");
+    dlg->setAttribute(Qt::WA_StyleSheet, false);
+  }
+#endif
+}
+
+QMessageBox::StandardButton QtUtils::MessageBoxIcon(QWidget* parent, QMessageBox::Icon icon, const QString& title,
+                                                    const QString& text, QMessageBox::StandardButtons buttons,
+                                                    QMessageBox::StandardButton defaultButton)
+{
+#ifndef __APPLE__
+  QMessageBox msgbox(icon, title, text, buttons, parent ? QtUtils::GetRootWidget(parent) : nullptr);
+#else
+  QMessageBox msgbox(icon, QString(), title, buttons, parent ? QtUtils::GetRootWidget(parent) : nullptr);
+  msgbox.setInformativeText(text);
+#endif
+
+  // NOTE: Must be application modal, otherwise will lock up on MacOS.
+  SetMessageBoxStyle(&msgbox);
+  msgbox.setWindowModality(Qt::ApplicationModal);
+  msgbox.setDefaultButton(defaultButton);
+  return static_cast<QMessageBox::StandardButton>(msgbox.exec());
+}
+
+QMessageBox* QtUtils::NewMessageBox(QWidget* parent, QMessageBox::Icon icon, const QString& title, const QString& text,
+                                    QMessageBox::StandardButtons buttons, QMessageBox::StandardButton defaultButton,
+                                    bool delete_on_close)
+{
+#ifndef __APPLE__
+  QMessageBox* msgbox = new QMessageBox(icon, title, text, buttons, parent ? QtUtils::GetRootWidget(parent) : nullptr);
+#else
+  QMessageBox* msgbox =
+    new QMessageBox(icon, QString(), title, buttons, parent ? QtUtils::GetRootWidget(parent) : nullptr);
+  msgbox->setInformativeText(text);
+#endif
+  if (delete_on_close)
+    msgbox->setAttribute(Qt::WA_DeleteOnClose);
+  msgbox->setIcon(icon);
+  SetMessageBoxStyle(msgbox);
+  return msgbox;
+}
+
+void QtUtils::AsyncMessageBox(QWidget* parent, QMessageBox::Icon icon, const QString& title, const QString& text,
+                              QMessageBox::StandardButtons button /*= QMessageBox::Ok*/)
+{
+  QMessageBox* msgbox = NewMessageBox(parent, icon, title, text, button, QMessageBox::NoButton, true);
+  msgbox->open();
+}
+
+void QtUtils::StylePopupMenu(QMenu* menu)
+{
+  if (QtHost::HasGlobalStylesheet())
+  {
+    menu->setWindowFlags(menu->windowFlags() | Qt::NoDropShadowWindowHint | Qt::FramelessWindowHint);
+    menu->setAttribute(Qt::WA_TranslucentBackground, true);
+  }
+  else
+  {
+    if (!(menu->windowFlags() & Qt::NoDropShadowWindowHint))
+      return;
+
+    menu->setWindowFlags(menu->windowFlags() & ~(Qt::NoDropShadowWindowHint | Qt::FramelessWindowHint));
+    menu->setAttribute(Qt::WA_TranslucentBackground, false);
+  }
+}
+
+void QtUtils::StyleChildMenus(QWidget* widget)
+{
+  for (QMenu* menu : widget->findChildren<QMenu*>())
+    StylePopupMenu(menu);
+}
+
+QMenu* QtUtils::NewPopupMenu(QWidget* parent, bool delete_on_close /*= true*/)
+{
+  QMenu* menu = new QMenu(parent);
+  if (QtHost::HasGlobalStylesheet())
+  {
+    menu->setWindowFlags(menu->windowFlags() | Qt::NoDropShadowWindowHint | Qt::FramelessWindowHint);
+    menu->setAttribute(Qt::WA_TranslucentBackground, true);
+  }
+
+  if (delete_on_close)
+    menu->setAttribute(Qt::WA_DeleteOnClose, true);
+
+  return menu;
+}
+
+QMessageBox::StandardButton QtUtils::MessageBoxInformation(QWidget* parent, const QString& title, const QString& text,
+                                                           QMessageBox::StandardButtons buttons,
+                                                           QMessageBox::StandardButton defaultButton)
+{
+  return MessageBoxIcon(parent, QMessageBox::Information, title, text, buttons, defaultButton);
+}
+
+QMessageBox::StandardButton QtUtils::MessageBoxWarning(QWidget* parent, const QString& title, const QString& text,
+                                                       QMessageBox::StandardButtons buttons,
+                                                       QMessageBox::StandardButton defaultButton)
+{
+  return MessageBoxIcon(parent, QMessageBox::Warning, title, text, buttons, defaultButton);
+}
+
+QMessageBox::StandardButton QtUtils::MessageBoxCritical(QWidget* parent, const QString& title, const QString& text,
+                                                        QMessageBox::StandardButtons buttons,
+                                                        QMessageBox::StandardButton defaultButton)
+{
+  return MessageBoxIcon(parent, QMessageBox::Critical, title, text, buttons, defaultButton);
+}
+
+QMessageBox::StandardButton QtUtils::MessageBoxQuestion(QWidget* parent, const QString& title, const QString& text,
+                                                        QMessageBox::StandardButtons buttons,
+                                                        QMessageBox::StandardButton defaultButton)
+{
+  return MessageBoxIcon(parent, QMessageBox::Question, title, text, buttons, defaultButton);
+}
+
 QIcon QtUtils::GetIconForTranslationLanguage(std::string_view language_name)
 {
   QString icon_path;
@@ -242,7 +382,7 @@ QIcon QtUtils::GetIconForTranslationLanguage(std::string_view language_name)
     if (!QFile::exists(icon_path))
     {
       // try without the suffix (e.g. es-es -> es)
-      const int index = qlanguage_name.indexOf('-');
+      const qsizetype index = qlanguage_name.indexOf('-');
       if (index >= 0)
         icon_path = QStringLiteral(":/icons/flags/%1.png").arg(qlanguage_name.left(index));
     }
@@ -261,13 +401,13 @@ QIcon QtUtils::GetIconForRegion(ConsoleRegion region)
   switch (region)
   {
     case ConsoleRegion::NTSC_J:
-      return QIcon(QString::fromStdString(QtHost::GetResourcePath("images/flags/NTSC-J.svg", true)));
+      return QIcon(QtHost::GetResourceQPath("images/flags/NTSC-J.svg", true));
 
     case ConsoleRegion::NTSC_U:
-      return QIcon(QString::fromStdString(QtHost::GetResourcePath("images/flags/NTSC-U.svg", true)));
+      return QIcon(QtHost::GetResourceQPath("images/flags/NTSC-U.svg", true));
 
     case ConsoleRegion::PAL:
-      return QIcon(QString::fromStdString(QtHost::GetResourcePath("images/flags/PAL.svg", true)));
+      return QIcon(QtHost::GetResourceQPath("images/flags/PAL.svg", true));
 
     case ConsoleRegion::Auto:
       return QIcon(QStringLiteral(":/icons/system-search.png"));
@@ -282,13 +422,13 @@ QIcon QtUtils::GetIconForRegion(DiscRegion region)
   switch (region)
   {
     case DiscRegion::NTSC_J:
-      return QIcon(QString::fromStdString(QtHost::GetResourcePath("images/flags/NTSC-J.svg", true)));
+      return QIcon(QtHost::GetResourceQPath("images/flags/NTSC-J.svg", true));
 
     case DiscRegion::NTSC_U:
-      return QIcon(QString::fromStdString(QtHost::GetResourcePath("images/flags/NTSC-U.svg", true)));
+      return QIcon(QtHost::GetResourceQPath("images/flags/NTSC-U.svg", true));
 
     case DiscRegion::PAL:
-      return QIcon(QString::fromStdString(QtHost::GetResourcePath("images/flags/PAL.svg", true)));
+      return QIcon(QtHost::GetResourceQPath("images/flags/PAL.svg", true));
 
     case DiscRegion::Other:
     case DiscRegion::NonPS1:
@@ -304,8 +444,9 @@ QIcon QtUtils::GetIconForEntryType(GameList::EntryType type)
     case GameList::EntryType::Disc:
       return QIcon::fromTheme(QStringLiteral("disc-line"));
     case GameList::EntryType::Playlist:
-    case GameList::EntryType::DiscSet:
       return QIcon::fromTheme(QStringLiteral("play-list-2-line"));
+    case GameList::EntryType::DiscSet:
+      return QIcon::fromTheme(QStringLiteral("multi-discs"));
     case GameList::EntryType::PSF:
       return QIcon::fromTheme(QStringLiteral("file-music-line"));
     case GameList::EntryType::PSExe:
@@ -316,23 +457,86 @@ QIcon QtUtils::GetIconForEntryType(GameList::EntryType type)
 
 QIcon QtUtils::GetIconForCompatibility(GameDatabase::CompatibilityRating rating)
 {
-  return QIcon(QString::fromStdString(
-    QtHost::GetResourcePath(TinyString::from_format("images/star-{}.svg", static_cast<u32>(rating)), true)));
+  return QIcon(QtHost::GetResourceQPath(TinyString::from_format("images/star-{}.svg", static_cast<u32>(rating)), true));
 }
 
 QIcon QtUtils::GetIconForLanguage(std::string_view language_name)
 {
-  return QIcon(
-    QString::fromStdString(QtHost::GetResourcePath(GameDatabase::GetLanguageFlagResourceName(language_name), true)));
+  return QIcon(QtHost::GetResourceQPath(GameDatabase::GetLanguageFlagResourceName(language_name), true));
 }
 
-qreal QtUtils::GetDevicePixelRatioForWidget(const QWidget* widget)
+template<typename T>
+static void ResizeSharpBilinearT(T& pm, int size, int base_size)
 {
-  const QScreen* screen_for_ratio = widget->screen();
-  if (!screen_for_ratio)
-    screen_for_ratio = QGuiApplication::primaryScreen();
+  // Sharp Bilinear scaling
+  // First, scale the icon by the next largest integer size using nearest-neighbor...
+  const int integer_icon_size = static_cast<int>(std::ceil(static_cast<float>(size) / base_size) * base_size);
+  if (pm.width() != integer_icon_size || pm.height() != integer_icon_size)
+    pm = pm.scaled(integer_icon_size, integer_icon_size, Qt::IgnoreAspectRatio, Qt::FastTransformation);
 
-  return screen_for_ratio ? screen_for_ratio->devicePixelRatio() : static_cast<qreal>(1);
+  // ...then scale down any remainder using bilinear interpolation.
+  if ((integer_icon_size - size) > 0)
+    pm = pm.scaled(size, size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+}
+
+void QtUtils::ResizeSharpBilinear(QPixmap& pm, int size, int base_size)
+{
+  ResizeSharpBilinearT(pm, size, base_size);
+}
+
+void QtUtils::ResizeSharpBilinear(QImage& pm, int size, int base_size)
+{
+  ResizeSharpBilinearT(pm, size, base_size);
+}
+
+QSize QtUtils::ApplyDevicePixelRatioToSize(const QSize& size, qreal device_pixel_ratio)
+{
+  return QSize(static_cast<int>(std::ceil(static_cast<qreal>(size.width()) * device_pixel_ratio)),
+               static_cast<int>(std::ceil(static_cast<qreal>(size.height()) * device_pixel_ratio)));
+}
+
+QSize QtUtils::GetDeviceIndependentSize(const QSize& size, qreal device_pixel_ratio)
+{
+  return QSize(std::max(static_cast<int>(std::ceil(static_cast<qreal>(size.width()) / device_pixel_ratio)), 1),
+               std::max(static_cast<int>(std::ceil(static_cast<qreal>(size.height()) / device_pixel_ratio)), 1));
+}
+
+std::pair<QSize, qreal> QtUtils::GetPixelSizeForWidget(const QWidget* widget)
+{
+  // Why this nonsense? Qt's device independent sizes are integer, and fractional scaling is lossy.
+  // We can't get back the "real" size of the window. So we have to platform natively query the actual client size.
+#if defined(_WIN32)
+  if (RECT rc; GetClientRect(reinterpret_cast<HWND>(widget->winId()), &rc))
+  {
+    const qreal device_pixel_ratio = widget->devicePixelRatio();
+    return std::make_pair(QSize(static_cast<int>(rc.right - rc.left), static_cast<int>(rc.bottom - rc.top)),
+                          device_pixel_ratio);
+  }
+#elif defined(__APPLE__)
+  if (Host::GetBaseBoolSettingValue("Main", "UseFractionalWindowScale", true))
+  {
+    if (const std::optional<double> real_device_pixel_ratio =
+          CocoaTools::GetViewRealScalingFactor(reinterpret_cast<void*>(widget->winId())))
+    {
+      const qreal device_pixel_ratio = static_cast<qreal>(real_device_pixel_ratio.value());
+      return std::make_pair(ApplyDevicePixelRatioToSize(widget->size(), device_pixel_ratio), device_pixel_ratio);
+    }
+  }
+  else
+  {
+    if (std::optional<std::pair<int, int>> size =
+          CocoaTools::GetViewSizeInPixels(reinterpret_cast<void*>(widget->winId())))
+    {
+      const qreal device_pixel_ratio = widget->devicePixelRatio();
+      return std::make_pair(QSize(size->first, size->second), device_pixel_ratio);
+    }
+  }
+#endif
+
+  // On Linux, fuck you, enjoy round trip to the X server, and on Wayland you can't query it in the first place...
+  // I ain't dealing with this crap OS. Enjoy your mismatched sizes and shit experience.
+  const qreal device_pixel_ratio = widget->devicePixelRatio();
+  return std::make_pair(ApplyDevicePixelRatioToSize(widget->size(), device_pixel_ratio), device_pixel_ratio);
 }
 
 std::optional<WindowInfo> QtUtils::GetWindowInfoForWidget(QWidget* widget, RenderAPI render_api, Error* error)
@@ -380,9 +584,9 @@ std::optional<WindowInfo> QtUtils::GetWindowInfoForWidget(QWidget* widget, Rende
   }
 #endif
 
-  const qreal dpr = GetDevicePixelRatioForWidget(widget);
-  wi.surface_width = static_cast<u16>(static_cast<qreal>(widget->width()) * dpr);
-  wi.surface_height = static_cast<u16>(static_cast<qreal>(widget->height()) * dpr);
+  const auto& [size, dpr] = GetPixelSizeForWidget(widget);
+  wi.surface_width = static_cast<u16>(size.width());
+  wi.surface_height = static_cast<u16>(size.height());
   wi.surface_scale = static_cast<float>(dpr);
 
   // Query refresh rate, we need it for sync.
@@ -400,9 +604,16 @@ std::optional<WindowInfo> QtUtils::GetWindowInfoForWidget(QWidget* widget, Rende
   }
 
   wi.surface_refresh_rate = surface_refresh_rate.value();
-  INFO_LOG("Surface refresh rate: {} hz", wi.surface_refresh_rate);
+
+  INFO_LOG("Window size: {}x{} (Qt {}x{}), scale: {}, refresh rate {} hz", wi.surface_width, wi.surface_height,
+           widget->width(), widget->height(), wi.surface_scale, wi.surface_refresh_rate);
 
   return wi;
+}
+
+void QtUtils::SaveWindowGeometry(QWidget* widget, bool auto_commit_changes /* = true */)
+{
+  SaveWindowGeometry(widget->metaObject()->className(), widget, auto_commit_changes);
 }
 
 void QtUtils::SaveWindowGeometry(std::string_view window_name, QWidget* widget, bool auto_commit_changes)
@@ -463,6 +674,11 @@ void QtUtils::SaveWindowGeometry(std::string_view window_name, QWidget* widget, 
     Host::CommitBaseSettingChanges();
 }
 
+bool QtUtils::RestoreWindowGeometry(QWidget* widget)
+{
+  return RestoreWindowGeometry(widget->metaObject()->className(), widget);
+}
+
 bool QtUtils::RestoreWindowGeometry(std::string_view window_name, QWidget* widget)
 {
   const auto lock = Host::GetSettingsLock();
@@ -479,11 +695,62 @@ bool QtUtils::RestoreWindowGeometry(std::string_view window_name, QWidget* widge
     return TryMigrateWindowGeometry(si, window_name, widget);
   }
 
+  // Ensure that the geometry is not off-screen. This is quite painful to do, but better than spawning the
+  // window off-screen. It also won't work on Wankland, and apparently doesn't support multiple monitors
+  // on X11, but who cares. I'm just going to disable the whole thing on Linux, because I don't want to
+  // deal with people moaning that their window manager's behavior is causing positions to revert to the
+  // primary monitor, so just yolo it and hope for the best....
+#ifndef __linux__
+  bool window_is_offscreen = true;
+  for (const QScreen* screen : qApp->screens())
+  {
+    const QRect screen_geometry = screen->geometry();
+    if (screen_geometry.contains(x, y))
+    {
+      window_is_offscreen = false;
+      break;
+    }
+  }
+  if (window_is_offscreen)
+  {
+    // If the window is off-screen, we will just center it on the primary screen.
+    const QScreen* primary_screen = QGuiApplication::primaryScreen();
+    if (primary_screen)
+    {
+      // Might be a different monitor, clamp to size.
+      const QRect screen_geometry = primary_screen->availableGeometry();
+      w = std::min(w, screen_geometry.width());
+      h = std::min(h, screen_geometry.height());
+      x = screen_geometry.x() + (screen_geometry.width() - w) / 2;
+      y = screen_geometry.y() + (screen_geometry.height() - h) / 2;
+    }
+
+    WARNING_LOG("Saved window position for {} is off-screen, centering to primary screen ({},{} w={},h={})",
+                window_name, x, y, w, h);
+  }
+#endif // __linux__
+
   widget->setGeometry(x, y, w, h);
   if (maximized)
     widget->setWindowState(widget->windowState() | Qt::WindowMaximized);
 
   return true;
+}
+
+void QtUtils::CenterWindowRelativeToParent(QWidget* window, const QWidget* parent_window)
+{
+  // la la la, this won't work on fucking wankland, I don't care, it'll appear in the top-left
+  // corner of the screen or whatever, shit experience is shit
+
+  const QRect& parent_geometry = (parent_window && parent_window->isVisible()) ?
+                                   parent_window->geometry() :
+                                   QGuiApplication::primaryScreen()->availableGeometry();
+  const QPoint parent_center_pos = parent_geometry.center();
+
+  QRect window_geometry = window->geometry();
+  window_geometry.moveCenter(parent_center_pos);
+
+  window->setGeometry(window_geometry);
 }
 
 bool QtUtils::TryMigrateWindowGeometry(SettingsInterface* si, std::string_view window_name, QWidget* widget)
@@ -513,4 +780,59 @@ bool QtUtils::TryMigrateWindowGeometry(SettingsInterface* si, std::string_view w
   si->DeleteValue(WINDOW_GEOMETRY_CONFIG_SECTION, config_key.c_str());
   Host::CommitBaseSettingChanges();
   return true;
+}
+
+std::optional<u32> QtUtils::KeyEventToCode(const QKeyEvent* ev)
+{
+  u32 scancode = ev->nativeScanCode();
+
+#if defined(_WIN32)
+  // According to https://github.com/nyanpasu64/qkeycode/blob/master/src/qkeycode/qkeycode.cpp#L151,
+  // we need to convert the bit flag here.
+  if (scancode & 0x100)
+    scancode = (scancode - 0x100) | 0xe000;
+
+#elif defined(__APPLE__)
+#if 0
+  // On macOS, Qt applies the Keypad modifier regardless of whether the arrow keys, or numpad was pressed.
+  // The only way to differentiate between the keypad and the arrow keys is by the text.
+  // Hopefully some keyboard layouts don't change the numpad positioning...
+  Qt::KeyboardModifiers modifiers = ev->modifiers();
+  if (modifiers & Qt::KeypadModifier && key >= Qt::Key_Insert && key <= Qt::Key_PageDown)
+  {
+    if (ev->text().isEmpty())
+    {
+      // Drop the modifier, because it's probably not actually a numpad push.
+      modifiers &= ~Qt::KeypadModifier;
+    }
+  }
+#endif
+
+  // Stored in virtual key not scancode.
+  if (scancode == 0)
+    scancode = ev->nativeVirtualKey();
+
+  // Undo Qt swapping of control/meta.
+  // It also can't differentiate between left and right control/meta keys...
+  const int qt_key = ev->key();
+  switch (qt_key)
+  {
+    case Qt::Key_Shift:
+      return static_cast<u32>(USBKeyCode::ShiftLeft);
+    case Qt::Key_Meta:
+      return static_cast<u32>(USBKeyCode::ControlLeft);
+    case Qt::Key_Control:
+      return static_cast<u32>(USBKeyCode::MetaLeft);
+    case Qt::Key_Alt:
+      return static_cast<u32>(USBKeyCode::AltLeft);
+    case Qt::Key_CapsLock:
+      return static_cast<u32>(USBKeyCode::CapsLock);
+    default:
+      break;
+  }
+#else
+
+#endif
+
+  return InputManager::ConvertHostNativeKeyCodeToKeyCode(scancode);
 }
